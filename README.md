@@ -43,8 +43,9 @@ iam_dataset/
 `-- words/...
 ```
 
-The preparer creates deterministic writer-disjoint train/validation/test
-manifests. Character supervision comes from EMNIST ByClass and synthetic samples
+The IAM preparer creates deterministic writer-disjoint train/validation/test
+manifests. The independent stage-1 character classifier does not read IAM:
+its supervision comes from EMNIST ByClass and synthetic samples
 rendered from `.ttf`/`.otf` handwriting fonts. Every font must have a nearby
 `OFL.txt`, `LICENSE.txt`, `LICENSE`, or `UFL.txt` file.
 
@@ -80,10 +81,11 @@ data:
   emnist_root: /kaggle/input/emnist
   emnist_cache: /kaggle/working/charwritevit-data/emnist-index
   fonts_dir: /kaggle/input/handwriting-fonts
+  char_prepared_dir: /kaggle/working/charwritevit-data/characters
   prepared_dir: /kaggle/working/charwritevit-data/iam
 ```
 
-Download/validate EMNIST and discover licensed fonts:
+Validate EMNIST and discover licensed fonts (IAM is not used by this command):
 
 ```bash
 python -m charwritevit.cli.prepare_char_data \

@@ -1,0 +1,52 @@
+seed: 42
+data:
+  iam_root: /kaggle/input/iam-handwriting/iam_dataset
+  prepared_dir: /kaggle/working/charwritevit-data/iam
+  char_prepared_dir: /kaggle/working/charwritevit-data/characters
+  emnist_root: /kaggle/input/emnist
+  emnist_cache: /kaggle/working/charwritevit-data/emnist-index
+  fonts_dir: /kaggle/input/handwriting-fonts
+  require_font_license: true
+  image_height: 32
+  char_width: 16
+  max_word_length: 24
+  style_references: 4
+  split: [0.8, 0.1, 0.1]
+model:
+  architecture: writevit_multiscale
+  alphabet: "!#&()*+,-./0123456789:;?ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+  unifont_path: assets/unifont.pickle
+  style_dim: 256
+  hidden_dim: 256
+  context_layers: 3
+  context_heads: 4
+  multiscale_depth: 3
+  feature_noise: true
+  feature_noise_std: 1.0
+  use_contextualizer: true
+  use_merger: false
+  gradient_checkpointing: false
+  dropout: 0.1
+train:
+  batch_size: 8
+  accumulation_steps: 4
+  epochs: 40
+  classifier_epochs: 10
+  classifier_batch_size: 256
+  classifier_accumulation_steps: 1
+  classifier_learning_rate: 0.001
+  learning_rate: 0.0002
+  num_workers: 2
+  amp: true
+  checkpoint_every: 1
+  preview_every: 1
+  preview_samples: 16
+loss:
+  reconstruction: 10.0
+  edge: 0.0
+  character_raw: 1.0
+  character_context: 0.25
+  ctc: 1.0
+  style: 1.0
+  adversarial: 1.0
+
