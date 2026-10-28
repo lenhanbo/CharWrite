@@ -13,6 +13,8 @@ convolutional decoder.
 ## Model data flow
 
 1. Parse IAM `forms.txt`; construct writer-disjoint train/val/test manifests.
+   All EMNIST, synthetic-font, and IAM images are polarity-normalized to black
+   ink on white background before resizing and scaling to `[-1, 1]`.
 2. Encode every character with a frozen 16x16 GNU Unifont table plus a learned
    embedding and trainable projection.
 3. Encode same-writer reference words with a ViT Writer Encoder.
