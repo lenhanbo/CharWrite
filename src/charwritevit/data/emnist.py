@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import numpy as np
@@ -69,12 +70,46 @@ class KaggleEMNISTCSV(Dataset):
         return pil_to_tensor(image,(16,32)),self.vocabulary.stoi[char]
 
 
+def _find_csv_sources(root: str | Path, split: str) -> tuple[Path | None, Path | None, list[Path]]:
+    """Find crawford/emnist even when Kaggle mounts it under a different slug."""
+    configured=Path(root)
+    search_roots=[configured]
+    kaggle_input=Path(os.environ.get("KAGGLE_INPUT_PATH","/kaggle/input"))
+    if kaggle_input.exists() and kaggle_input != configured:
+        search_roots.append(kaggle_input)
+
+    searched=[]
+    csv_name=f"emnist-byclass-{split}.csv"
+    for base in search_roots:
+        if not base.exists():
+            continue
+        searched.append(base)
+        csv_files=list(base.rglob(csv_name))
+        mapping_files=list(base.rglob("emnist-byclass-mapping.txt"))
+        if csv_files and mapping_files:
+            return csv_files[0],mapping_files[0],searched
+    return None,None,searched
+
+
 def build_emnist_dataset(root: str | Path, vocabulary: CharacterVocabulary, train=True, download=False, cache_dir: str | Path | None = None) -> Dataset:
     base=Path(root); split="train" if train else "test"
-    csv_files=list(base.rglob(f"emnist-byclass-{split}.csv")) if base.exists() else []
-    mapping_files=list(base.rglob("emnist-byclass-mapping.txt")) if base.exists() else []
-    if csv_files and mapping_files:
+    csv_path,mapping_path,searched=_find_csv_sources(base,split)
+    if csv_path is not None and mapping_path is not None:
         cache_dir=cache_dir or Path(".cache/emnist-csv")
-        return KaggleEMNISTCSV(csv_files[0],mapping_files[0],vocabulary,cache_dir)
-    return EMNISTCharacters(str(base),vocabulary,train=train,download=download)
+        return KaggleEMNISTCSV(csv_path,mapping_path,vocabulary,cache_dir)
+    kaggle_input=Path(os.environ.get("KAGGLE_INPUT_PATH","/kaggle/input"))
+    if not download and kaggle_input.exists():
+        locations=", ".join(str(path) for path in searched) or str(base)
+        attached=", ".join(path.name for path in kaggle_input.iterdir() if path.is_dir())
+        raise FileNotFoundError(
+            f"Could not find emnist-byclass-{split}.csv and emnist-byclass-mapping.txt "
+            f"under {locations}. Attached Kaggle datasets: [{attached}]. "
+            "Attach crawford/emnist or set data.emnist_root to its mounted directory."
+        )
+    # /kaggle/input is read-only.  When attached CSV files are unavailable,
+    # let torchvision cache its downloaded copy beside our writable CSV index.
+    fallback_root=base
+    if kaggle_input.exists() and (base == kaggle_input or kaggle_input in base.parents):
+        fallback_root=Path(cache_dir).parent/"torchvision-emnist" if cache_dir else Path("/kaggle/working/charwritevit-data/torchvision-emnist")
+    return EMNISTCharacters(str(fallback_root),vocabulary,train=train,download=download)
 

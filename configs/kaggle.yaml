@@ -5,6 +5,7 @@ data:
   char_prepared_dir: /kaggle/working/charwritevit-data/characters
   emnist_root: /kaggle/input/emnist
   emnist_cache: /kaggle/working/charwritevit-data/emnist-index
+  auto_download_emnist: true
   fonts_dir: /kaggle/input/handwriting-fonts
   require_font_license: true
   image_height: 32

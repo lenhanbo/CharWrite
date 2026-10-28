@@ -22,10 +22,11 @@ def main():
     fonts=discover_fonts(data["fonts_dir"],bool(data.get("require_font_license",True)))
     char_root=Path(data.get("char_prepared_dir","data/characters"))
     cache=Path(data.get("emnist_cache",char_root.parent/"emnist-index"))
-    datasets=[build_emnist_dataset(data["emnist_root"],vocab,train=True,download=False,cache_dir=cache), SyntheticCharacterDataset(fonts,vocab,samples=100000)]
+    auto_download=bool(data.get("auto_download_emnist",True))
+    datasets=[build_emnist_dataset(data["emnist_root"],vocab,train=True,download=auto_download,cache_dir=cache), SyntheticCharacterDataset(fonts,vocab,samples=100000)]
     classifier_batch=int(tc.get("classifier_batch_size",tc["batch_size"]))
     loader=DataLoader(ConcatDataset(datasets),batch_size=classifier_batch,shuffle=True,num_workers=int(tc.get("num_workers",2)),pin_memory=True)
-    validation=ConcatDataset([build_emnist_dataset(data["emnist_root"],vocab,train=False,download=False,cache_dir=cache),SyntheticCharacterDataset(fonts,vocab,samples=10000)])
+    validation=ConcatDataset([build_emnist_dataset(data["emnist_root"],vocab,train=False,download=auto_download,cache_dir=cache),SyntheticCharacterDataset(fonts,vocab,samples=10000)])
     validation_loader=DataLoader(validation,batch_size=classifier_batch,shuffle=False,num_workers=int(tc.get("num_workers",2)),pin_memory=True)
     model=CharacterClassifier(len(vocab)).to(device); opt=torch.optim.AdamW(model.parameters(),lr=float(tc.get("classifier_learning_rate",tc["learning_rate"]))); scaler=make_scaler(device,tc.get("amp",True))
     epochs=args.epochs or int(tc.get("classifier_epochs",tc["epochs"])); step=0; start_epoch=0; best_accuracy=0.0; history=MetricHistory(args.output)

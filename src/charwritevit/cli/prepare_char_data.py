@@ -16,7 +16,8 @@ def main():
     vocab=CharacterVocabulary(cfg["model"]["alphabet"])
     char_root=Path(data.get("char_prepared_dir","data/characters"))
     cache=Path(data.get("emnist_cache",char_root.parent/"emnist-index"))
-    emnist=build_emnist_dataset(data["emnist_root"],vocab,download=args.download_emnist,cache_dir=cache)
+    auto_download=bool(data.get("auto_download_emnist",True))
+    emnist=build_emnist_dataset(data["emnist_root"],vocab,download=args.download_emnist or auto_download,cache_dir=cache)
     fonts=discover_fonts(data["fonts_dir"],bool(data.get("require_font_license",True)))
     font_root=Path(data["fonts_dir"])
     manifest={"emnist_samples":len(emnist),"fonts":[{"path":str(x),"license":str(font_license(x,font_root) or "unverified")} for x in fonts],"alphabet":cfg["model"]["alphabet"]}
