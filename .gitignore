@@ -6,6 +6,6 @@ build/
 dist/
 *.egg-info/
 outputs/
-data/
+/data/
 *.pt
 
