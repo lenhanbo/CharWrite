@@ -24,12 +24,12 @@ def font_license(font: Path, root: Path) -> Path | None:
     return None
 
 
-def discover_fonts(root: str | Path, require_license: bool = True) -> list[Path]:
+def discover_fonts(root: str | Path, require_license: bool = True, allow_empty: bool = False) -> list[Path]:
     base = Path(root)
     fonts = sorted([*base.rglob("*.ttf"), *base.rglob("*.otf")])
     if require_license:
         fonts = [font for font in fonts if font_license(font, base) is not None]
-    if not fonts:
+    if not fonts and not allow_empty:
         detail = " with an adjacent OFL/LICENSE file" if require_license else ""
         raise FileNotFoundError(f"No .ttf/.otf fonts{detail} found under {root}")
     return fonts
@@ -57,9 +57,12 @@ def render_word(text: str, font: ImageFont.FreeTypeFont, char_width=16, height=3
 
 
 class SyntheticCharacterDataset(Dataset):
-    def __init__(self, fonts: list[Path], vocabulary: CharacterVocabulary, samples=100_000, font_size=(20, 30)):
+    def __init__(self, fonts: list[Path], vocabulary: CharacterVocabulary, samples=100_000, font_size=(20, 30), characters: str | list[str] | None = None):
         self.fonts, self.vocab, self.samples, self.font_size = fonts, vocabulary, samples, font_size
-        self.characters = self.vocab.tokens[3:]
+        requested=self.vocab.tokens[3:] if characters is None else list(dict.fromkeys(characters))
+        self.characters=[char for char in requested if char in self.vocab.stoi]
+        if not self.fonts: raise ValueError("SyntheticCharacterDataset requires at least one font")
+        if not self.characters: raise ValueError("SyntheticCharacterDataset requires at least one vocabulary character")
 
     def __len__(self): return self.samples
 

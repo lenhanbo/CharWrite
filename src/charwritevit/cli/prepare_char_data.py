@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import warnings
 from pathlib import Path
 
 from charwritevit.config import load_config
@@ -18,7 +19,10 @@ def main():
     cache=Path(data.get("emnist_cache",char_root.parent/"emnist-index"))
     auto_download=bool(data.get("auto_download_emnist",True))
     emnist=build_emnist_dataset(data["emnist_root"],vocab,download=args.download_emnist or auto_download,cache_dir=cache)
-    fonts=discover_fonts(data["fonts_dir"],bool(data.get("require_font_license",True)))
+    fonts_optional=bool(data.get("classifier_fonts_optional",True))
+    fonts=discover_fonts(data["fonts_dir"],bool(data.get("require_font_license",True)),allow_empty=fonts_optional)
+    if not fonts:
+        warnings.warn("No licensed fonts found; preparing an EMNIST-only classifier. Punctuation classes will have no positive samples.")
     font_root=Path(data["fonts_dir"])
     manifest={"emnist_samples":len(emnist),"fonts":[{"path":str(x),"license":str(font_license(x,font_root) or "unverified")} for x in fonts],"alphabet":cfg["model"]["alphabet"]}
     # Character classification is an independent first stage.  Keep its

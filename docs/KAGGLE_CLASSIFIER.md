@@ -4,8 +4,14 @@ This is the first training stage. Do not start synthetic-word or IAM training
 until `best.pt`, the curves, per-class accuracy, and preview images have been
 inspected.
 
-This stage does **not** read IAM. Attach only `crawford/emnist` and the licensed
-handwriting-font dataset. IAM is needed by later OCR and generator stages.
+This stage does **not** read IAM. Attach `crawford/emnist`. A licensed
+handwriting-font dataset is optional: without it the classifier trains on the
+62 EMNIST alphanumeric classes, while punctuation remains untrained. IAM is
+needed by later OCR and generator stages.
+
+When fonts are present, training remains a single stage. Each epoch contains
+75% EMNIST alphanumeric samples and 25% font-rendered punctuation samples by
+default. The font source does not duplicate letters or digits.
 
 ## 1. Kaggle setup
 
@@ -39,8 +45,9 @@ python -m charwritevit.cli.prepare_char_data \
   --config configs/kaggle.yaml
 ```
 
-Expected output reports a non-zero EMNIST sample count and font count. If the
-font count is zero, check that every font family directory includes its license.
+Expected output reports a non-zero EMNIST sample count. A zero font count is
+valid for EMNIST-only training. If fonts were attached intentionally, check
+that every font family directory includes its license.
 
 ## 3. Smoke test
 

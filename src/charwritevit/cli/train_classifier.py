@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 import json
+import string
+import warnings
 
 import torch
 import torch.nn.functional as F
@@ -19,14 +21,28 @@ from charwritevit.train.utils import amp_context, make_scaler, optimizer_step, r
 def main():
     args=training_parser("Train the anchored character classifier").parse_args(); cfg=load_config(args.config); seed_everything(int(cfg.get("seed",42)))
     device=resolve_device(); vocab=load_vocab(cfg); data=cfg["data"]; tc=cfg["train"]
-    fonts=discover_fonts(data["fonts_dir"],bool(data.get("require_font_license",True)))
+    fonts_optional=bool(data.get("classifier_fonts_optional",True))
+    fonts=discover_fonts(data["fonts_dir"],bool(data.get("require_font_license",True)),allow_empty=fonts_optional)
+    if not fonts:
+        warnings.warn("Training on EMNIST only. Punctuation classes will remain untrained until licensed fonts are added.")
     char_root=Path(data.get("char_prepared_dir","data/characters"))
     cache=Path(data.get("emnist_cache",char_root.parent/"emnist-index"))
     auto_download=bool(data.get("auto_download_emnist",True))
-    datasets=[build_emnist_dataset(data["emnist_root"],vocab,train=True,download=auto_download,cache_dir=cache), SyntheticCharacterDataset(fonts,vocab,samples=100000)]
+    emnist_train=build_emnist_dataset(data["emnist_root"],vocab,train=True,download=auto_download,cache_dir=cache)
+    datasets=[emnist_train]
+    punctuation=[char for char in vocab.tokens[3:] if char not in string.ascii_letters+string.digits]
+    synthetic_fraction=float(tc.get("classifier_synthetic_fraction",0.25))
+    if not 0.0 <= synthetic_fraction < 1.0: raise ValueError("classifier_synthetic_fraction must be in [0, 1)")
+    synthetic_samples=0
+    if fonts and punctuation and synthetic_fraction>0:
+        synthetic_samples=round(len(emnist_train)*synthetic_fraction/(1.0-synthetic_fraction))
+        datasets.append(SyntheticCharacterDataset(fonts,vocab,samples=synthetic_samples,characters=punctuation))
     classifier_batch=int(tc.get("classifier_batch_size",tc["batch_size"]))
     loader=DataLoader(ConcatDataset(datasets),batch_size=classifier_batch,shuffle=True,num_workers=int(tc.get("num_workers",2)),pin_memory=True)
-    validation=ConcatDataset([build_emnist_dataset(data["emnist_root"],vocab,train=False,download=auto_download,cache_dir=cache),SyntheticCharacterDataset(fonts,vocab,samples=10000)])
+    validation_sets=[build_emnist_dataset(data["emnist_root"],vocab,train=False,download=auto_download,cache_dir=cache)]
+    if fonts and punctuation and synthetic_fraction>0:
+        validation_sets.append(SyntheticCharacterDataset(fonts,vocab,samples=int(tc.get("classifier_synthetic_val_samples",10000)),characters=punctuation))
+    validation=ConcatDataset(validation_sets)
     validation_loader=DataLoader(validation,batch_size=classifier_batch,shuffle=False,num_workers=int(tc.get("num_workers",2)),pin_memory=True)
     model=CharacterClassifier(len(vocab)).to(device); opt=torch.optim.AdamW(model.parameters(),lr=float(tc.get("classifier_learning_rate",tc["learning_rate"]))); scaler=make_scaler(device,tc.get("amp",True))
     epochs=args.epochs or int(tc.get("classifier_epochs",tc["epochs"])); step=0; start_epoch=0; best_accuracy=0.0; history=MetricHistory(args.output)
@@ -50,7 +66,7 @@ def main():
                 if preview is None: preview=(images.cpu(),labels.cpu(),logits.cpu())
                 if args.max_steps and batch_index>=9: break
         observed=class_count.gt(0); per_class=class_correct.float()/class_count.clamp_min(1); macro=float(per_class[observed].mean()) if observed.any() else 0.0
-        metrics={"epoch":epoch,"step":step,"train_loss":train_loss/max(1,train_count),"train_accuracy":train_correct/max(1,train_count),"val_loss":val_loss/max(1,val_count),"val_accuracy":val_correct/max(1,val_count),"val_macro_accuracy":macro,"learning_rate":opt.param_groups[0]["lr"]}
+        metrics={"epoch":epoch,"step":step,"train_loss":train_loss/max(1,train_count),"train_accuracy":train_correct/max(1,train_count),"val_loss":val_loss/max(1,val_count),"val_accuracy":val_correct/max(1,val_count),"val_macro_accuracy":macro,"learning_rate":opt.param_groups[0]["lr"],"synthetic_samples":synthetic_samples}
         history.append(metrics); history.plot("classifier_curves.png")
         (Path(args.output)/"per_class_accuracy.json").write_text(json.dumps({vocab.tokens[index]:float(per_class[index]) for index in range(len(vocab)) if observed[index]},ensure_ascii=False,indent=2),encoding="utf-8")
         if preview is not None: save_classifier_preview(*preview,vocab.tokens,Path(args.output)/"preview"/f"epoch_{epoch:03d}.png",int(tc.get("preview_samples",16)))

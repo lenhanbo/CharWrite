@@ -45,9 +45,11 @@ iam_dataset/
 
 The IAM preparer creates deterministic writer-disjoint train/validation/test
 manifests. The independent stage-1 character classifier does not read IAM:
-its supervision comes from EMNIST ByClass and synthetic samples
-rendered from `.ttf`/`.otf` handwriting fonts. Every font must have a nearby
+its required supervision comes from EMNIST ByClass. Optional punctuation
+samples can be rendered from `.ttf`/`.otf` handwriting fonts. Every font must have a nearby
 `OFL.txt`, `LICENSE.txt`, `LICENSE`, or `UFL.txt` file.
+When fonts are available, the classifier trains both sources together using a
+configurable 75% EMNIST / 25% synthetic-punctuation epoch mix.
 
 The bundled `assets/unifont.pickle` is the GNU Unifont table from WriteViT. Its
 frozen 16x16 raster embeddings form the content-token row in the initial

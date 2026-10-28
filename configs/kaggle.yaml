@@ -8,6 +8,7 @@ data:
   auto_download_emnist: true
   fonts_dir: /kaggle/input/handwriting-fonts
   require_font_license: true
+  classifier_fonts_optional: true
   image_height: 32
   char_width: 16
   max_word_length: 24
@@ -36,6 +37,8 @@ train:
   classifier_batch_size: 256
   classifier_accumulation_steps: 1
   classifier_learning_rate: 0.001
+  classifier_synthetic_fraction: 0.25
+  classifier_synthetic_val_samples: 10000
   learning_rate: 0.0002
   num_workers: 2
   amp: true

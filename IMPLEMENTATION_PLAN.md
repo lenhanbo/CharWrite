@@ -44,8 +44,11 @@ disabled and not instantiated by default.
 
 ## Training stages
 
-1. Train and validate the character classifier using only EMNIST ByClass plus
-   licensed synthetic-font glyphs. Do not load or prepare IAM in this stage.
+1. Train and validate the character classifier using EMNIST ByClass. Licensed
+   synthetic-font glyphs are optional and add punctuation supervision in the
+   same training stage. Default epoch composition is 75% EMNIST and 25%
+   synthetic punctuation; font samples do not duplicate alphanumerics. Do not
+   load or prepare IAM in this stage.
 2. Pretrain raw/context glyphs on exact synthetic character targets.
 3. Pretrain the complete multi-scale generator on synthetic glyph/full-word pairs.
 4. Train the ViT OCR and writer encoders on real IAM words.
