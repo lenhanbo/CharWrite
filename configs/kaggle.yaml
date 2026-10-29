@@ -1,6 +1,6 @@
 seed: 42
 data:
-  iam_root: /kaggle/input/iam-dataset/iam_dataset
+  iam_root: /kaggle/input/datasets/ngkinwang/iam-dataset/iam_dataset
   iam_forms_by_writer_root: /kaggle/input/iam-handwritten-forms-dataset
   iam_folder_as_writer: true
   prepared_dir: /kaggle/working/charwritevit-data/iam
