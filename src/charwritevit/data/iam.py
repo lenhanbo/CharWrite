@@ -77,12 +77,14 @@ def load_writer_mapping(root: str | Path, forms_by_writer_root: str | Path | Non
                         allow_folder_as_writer: bool = False) -> dict[str,str]:
     try: return parse_forms(find_forms_file(root))
     except FileNotFoundError:
+        if forms_by_writer_root:
+            try: return parse_forms_by_writer(forms_by_writer_root)
+            except FileNotFoundError: pass
+        # Explicit pseudo-writer mode deliberately avoids an expensive recursive
+        # XML scan across the large Kaggle word-image tree.
+        if allow_folder_as_writer: return {}
         try: return parse_xml_writer_mapping(root)
         except FileNotFoundError:
-            if forms_by_writer_root:
-                try: return parse_forms_by_writer(forms_by_writer_root)
-                except FileNotFoundError: pass
-            if allow_folder_as_writer: return {}
             raise FileNotFoundError("IAM writer metadata is missing: attach forms.txt/XML or a writer_folder/form_id.png dataset")
 
 
@@ -160,16 +162,16 @@ def save_splits(splits: dict[str, list[dict]], output: str | Path) -> None:
     target = Path(output)
     target.mkdir(parents=True, exist_ok=True)
     for name, records in splits.items():
-        (target / f"{name}.json").write_text(json.dumps(records, indent=2), encoding="utf-8")
+        (target / f"{name}.json").write_text(json.dumps(records,separators=(",",":")),encoding="utf-8")
     summary = {name: {"samples": len(rows), "writers": len({r["writer_id"] for r in rows})} for name, rows in splits.items()}
     (target / "summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
 
 
 class IAMWordDataset(Dataset):
     def __init__(self, manifest: str | Path, vocabulary: CharacterVocabulary, height=32, char_width=16,
-                 max_length=24, references=4):
+                 max_length=24, references=4, validate_paths=True):
         self.records = json.loads(Path(manifest).read_text(encoding="utf-8"))
-        self.records = [r for r in self.records if 0 < len(r["text"]) <= max_length and Path(r["path"]).is_file()]
+        self.records = [r for r in self.records if 0 < len(r["text"]) <= max_length and (not validate_paths or Path(r["path"]).is_file())]
         self.vocabulary, self.height, self.char_width, self.references = vocabulary, height, char_width, references
         self.by_writer: dict[str, list[int]] = defaultdict(list)
         for index, record in enumerate(self.records):

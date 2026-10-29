@@ -3,6 +3,7 @@ data:
   iam_root: /kaggle/input/datasets/ngkinwang/iam-dataset/iam_dataset
   iam_forms_by_writer_root: /kaggle/input/iam-handwritten-forms-dataset
   iam_folder_as_writer: true
+  iam_validate_images: false
   prepared_dir: /kaggle/working/charwritevit-data/iam
   char_prepared_dir: /kaggle/working/charwritevit-data/characters
   emnist_root: /kaggle/input/emnist

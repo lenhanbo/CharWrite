@@ -16,7 +16,7 @@ from charwritevit.train.utils import amp_context, make_scaler, optimizer_step, r
 def main():
     args=training_parser("Train IAM word OCR").parse_args(); cfg=load_config(args.config); seed_everything(int(cfg.get("seed",42)))
     device=resolve_device(); vocab=load_vocab(cfg); tc=cfg["train"]; dc=cfg["data"]
-    ds=IAMWordDataset(Path(dc["prepared_dir"])/"train.json",vocab,int(dc.get("image_height",32)),int(dc.get("char_width",16)),int(dc.get("max_word_length",24)),int(dc.get("style_references",4)))
+    ds=IAMWordDataset(Path(dc["prepared_dir"])/"train.json",vocab,int(dc.get("image_height",32)),int(dc.get("char_width",16)),int(dc.get("max_word_length",24)),int(dc.get("style_references",4)),bool(dc.get("iam_validate_images",True)))
     loader=DataLoader(ds,batch_size=int(tc["batch_size"]),shuffle=True,num_workers=int(tc.get("num_workers",2)),collate_fn=lambda b:collate_iam(b,vocab.pad_id))
     model=WordOCR(len(vocab)).to(device); opt=torch.optim.AdamW(model.parameters(),lr=float(tc["learning_rate"])); scaler=make_scaler(device,tc.get("amp",True)); criterion=CTCLoss(blank=vocab.blank_id,zero_infinity=True)
     step=0; start_epoch=0

@@ -25,7 +25,8 @@ def main():
         records += parse_manifest(root / "val_gt.txt", root, forms,folder_as_writer)
         records = list({r["word_id"]: r for r in records}.values())
     allowed = set(cfg["model"]["alphabet"]); max_len = int(data.get("max_word_length", 24))
-    records = [r for r in records if 0 < len(r["text"]) <= max_len and set(r["text"]) <= allowed and Path(r["path"]).is_file()]
+    validate_images=bool(data.get("iam_validate_images",True))
+    records = [r for r in records if 0 < len(r["text"]) <= max_len and set(r["text"]) <= allowed and (not validate_images or Path(r["path"]).is_file())]
     splits = build_writer_splits(records, tuple(data.get("split", [0.8, 0.1, 0.1])), int(cfg.get("seed", 42)))
     output = Path(data["prepared_dir"]); save_splits(splits, output)
     CharacterVocabulary(cfg["model"]["alphabet"]).save(output / "vocab.json")

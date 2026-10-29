@@ -44,7 +44,7 @@ def _ssim(x, y):
 def main():
     p=argparse.ArgumentParser(); p.add_argument("--config",required=True); p.add_argument("--checkpoint",required=True); p.add_argument("--classifier",required=True); p.add_argument("--ocr"); p.add_argument("--output",required=True); p.add_argument("--max-batches",type=int,default=100); args=p.parse_args()
     cfg=load_config(args.config); device=resolve_device(); vocab=load_vocab(cfg); dc=cfg["data"]
-    ds=IAMWordDataset(Path(dc["prepared_dir"])/"test.json",vocab,references=int(dc.get("style_references",4))); loader=DataLoader(ds,batch_size=8,collate_fn=lambda b:collate_iam(b,vocab.pad_id))
+    ds=IAMWordDataset(Path(dc["prepared_dir"])/"test.json",vocab,references=int(dc.get("style_references",4)),validate_paths=bool(dc.get("iam_validate_images",True))); loader=DataLoader(ds,batch_size=8,collate_fn=lambda b:collate_iam(b,vocab.pad_id))
     model=build_generator(cfg,vocab).to(device); state=load_checkpoint(args.checkpoint,device); model.load_state_dict(state.get("generator",state.get("model"))); model.eval()
     classifier=CharacterClassifier(len(vocab)).to(device); classifier.load_state_dict(load_checkpoint(args.classifier,device)["model"]); classifier.eval()
     ocr=WordOCR(len(vocab)).to(device)

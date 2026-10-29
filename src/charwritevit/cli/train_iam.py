@@ -23,7 +23,7 @@ def _grad(module, enabled): module.requires_grad_(enabled)
 def main():
     parser=training_parser("Train character-augmented WriteViT end-to-end on IAM"); parser.add_argument("--classifier",required=True); parser.add_argument("--ocr"); parser.add_argument("--synthetic-checkpoint"); parser.add_argument("--warmup-epochs",type=int,default=5)
     args=parser.parse_args(); cfg=load_config(args.config); seed_everything(int(cfg.get("seed",42))); device=resolve_device(); vocab=load_vocab(cfg); tc=cfg["train"]; dc=cfg["data"]; lc=cfg["loss"]
-    ds=IAMWordDataset(Path(dc["prepared_dir"])/"train.json",vocab,int(dc.get("image_height",32)),int(dc.get("char_width",16)),int(dc.get("max_word_length",24)),int(dc.get("style_references",4)))
+    ds=IAMWordDataset(Path(dc["prepared_dir"])/"train.json",vocab,int(dc.get("image_height",32)),int(dc.get("char_width",16)),int(dc.get("max_word_length",24)),int(dc.get("style_references",4)),bool(dc.get("iam_validate_images",True)))
     loader=DataLoader(ds,batch_size=int(tc["batch_size"]),shuffle=True,num_workers=int(tc.get("num_workers",2)),collate_fn=lambda b:collate_iam(b,vocab.pad_id),drop_last=True)
     writer_ids=sorted({r["writer_id"] for r in ds.records}); writer_to_id={x:i for i,x in enumerate(writer_ids)}
     gen=build_generator(cfg,vocab).to(device)
