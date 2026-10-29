@@ -46,9 +46,9 @@ disabled and not instantiated by default.
   trained jointly on real IAM words and frozen only during generator updates.
 - Discriminator: spectral-normalized residual/BigGAN-style discriminator.
 - Writer identification: ViT Writer Encoder with classification head.
-- Baseline losses: foreground reconstruction, raw/context character CE, OCR
-  CTC, writer/style consistency, and hinge GAN.
-- Edge reconstruction remains an optional diagnostic with training weight zero.
+- Full IAM losses: raw/context character CE, OCR CTC, writer/style consistency,
+  and hinge GAN. Full training has no paired pixel/edge reconstruction loss,
+  matching WriteViT's unpaired word-generation objective.
 
 ## Training stages
 

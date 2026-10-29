@@ -164,8 +164,9 @@ real IAM words, is temporarily frozen for fake-word CTC generator updates, and
 is stored in the same full checkpoint. `--ocr` remains optional when an OCR
 initialization checkpoint is available.
 
-Edge reconstruction is logged as a diagnostic but its training weight is zero
-by default. It should only be enabled after inspecting baseline results.
+Full IAM training has no paired pixel or edge reconstruction loss. Real IAM
+images train the recognizer, writer network, and discriminator; generated words
+are supervised by character CE, OCR/CTC, style consistency, and GAN losses.
 
 ## Sampling
 

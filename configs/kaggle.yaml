@@ -53,8 +53,6 @@ train:
   preview_every: 1
   preview_samples: 16
 loss:
-  reconstruction: 10.0
-  edge: 0.0
   character_raw: 1.0
   character_context: 0.25
   ctc: 1.0
