@@ -33,7 +33,7 @@ model:
   gradient_checkpointing: false
   dropout: 0.1
 train:
-  batch_size: 8
+  batch_size: 32
   accumulation_steps: 4
   epochs: 40
   classifier_epochs: 30
