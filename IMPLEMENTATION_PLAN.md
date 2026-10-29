@@ -12,7 +12,10 @@ convolutional decoder.
 
 ## Model data flow
 
-1. Parse IAM `forms.txt`; construct writer-disjoint train/val/test manifests.
+1. Recover IAM writers from `forms.txt`, XML metadata, or a companion
+   writer-folder/form-image dataset and construct writer-disjoint manifests.
+   If all metadata sources are absent, the temporary Kaggle preset treats each
+   word-image folder as a pseudo-writer; those splits are only folder-disjoint.
    All EMNIST, synthetic-font, and IAM images are polarity-normalized to black
    ink on white background before resizing and scaling to `[-1, 1]`.
 2. Encode every character with a frozen 16x16 GNU Unifont table plus a learned
@@ -20,8 +23,10 @@ convolutional decoder.
 3. Encode same-writer reference words with a ViT Writer Encoder.
 4. Cross-attend content tokens to writer tokens and decode one visible 32x16
    raw glyph per character.
-5. Encode raw glyphs and apply a bidirectional character Transformer. Produce
-   contextual glyph images and context tokens.
+5. Encode raw glyphs and apply a bidirectional character Transformer so every
+   character attends to the others. Decode each contextual token directly into
+   the complete contextual glyph; do not add a residual pixel correction to
+   the raw glyph. Produce contextual glyph images and context tokens.
 6. Inject context tokens into styled content tokens, concatenate them with raw
    content tokens, and reshape `[B,2L,D]` to `[B,D,2,L]`.
 7. Run the WriteViT multi-scale path: upsample, Transformer blocks, CPE/PosCNN,
@@ -37,7 +42,8 @@ disabled and not instantiated by default.
 
 - Character classifier: EMNIST ByClass plus licensed synthetic-font glyphs;
   frozen during generator training.
-- Recognizer: WriteViT-style ResNet18 patch encoder + ViT blocks + CTC head.
+- Recognizer: WriteViT-style ResNet18 patch encoder + ViT blocks + CTC head;
+  trained jointly on real IAM words and frozen only during generator updates.
 - Discriminator: spectral-normalized residual/BigGAN-style discriminator.
 - Writer identification: ViT Writer Encoder with classification head.
 - Baseline losses: foreground reconstruction, raw/context character CE, OCR
@@ -51,14 +57,21 @@ disabled and not instantiated by default.
    same training stage. Default epoch composition is 75% EMNIST and 25%
    synthetic punctuation; font samples do not duplicate alphanumerics. Do not
    load or prepare IAM in this stage.
-2. Pretrain raw/context glyphs on exact synthetic character targets.
-3. Pretrain the complete multi-scale generator on synthetic glyph/full-word pairs.
-4. Train the ViT OCR and writer encoders on real IAM words.
-5. Warm up the IAM generator without adversarial loss.
-6. Enable alternating discriminator/generator updates and fine-tune.
+2. Prepare writer-disjoint IAM words.
+3. Train OCR on real IAM batches jointly with the complete character-frontend
+   + WriteViT word generator. Freeze OCR parameters only while fake-word CTC
+   updates the generator. Train directly
+   on real IAM word targets, initially without adversarial loss. GNU Unifont is
+   only the frozen content prior, exactly as in WriteViT; glyph bitmaps are not
+   concatenated into the word target or passed as a coarse word image.
+4. The explicit raw/context glyph branch receives classifier supervision and
+   influences the unchanged WriteViT word path through context tokens.
+5. Enable alternating discriminator/generator updates and fine-tune.
 
 All stages support AMP, gradient accumulation, checkpoint resume, fixed seeds,
 and a Kaggle single-GPU preset.
+The full IAM checkpoint contains generator, discriminator, writer network, OCR,
+all optimizers, and all AMP scaler states for exact joint resume.
 The classifier uses one epoch of linear LR warmup followed by cosine decay;
 optimizer, scaler, and scheduler state are saved together for exact resume.
 
@@ -76,4 +89,6 @@ when enough samples exist, and style retrieval.
 - Tests cover feature-grid ordering, scale shapes, CPE, toRGB summation, frozen
   Unifont, gradient flow, independent style encoders, seeded noise, splits,
   checkpoint resume, and CPU/Kaggle smoke runs.
-- IAM, EMNIST, and fonts remain external; fonts require a nearby license.
+- IAM and EMNIST remain external. Licensed fonts are optional and only augment
+  punctuation supervision for the classifier; GNU Unifont remains the bundled
+  frozen content prior.

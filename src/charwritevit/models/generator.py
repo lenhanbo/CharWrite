@@ -47,16 +47,19 @@ class CharacterContextualizer(nn.Module):
         self.position = nn.Parameter(torch.randn(1, 64, hidden_dim) * 0.02)
         layer = nn.TransformerEncoderLayer(hidden_dim, heads, hidden_dim * 4, dropout, batch_first=True, norm_first=True)
         self.transformer = nn.TransformerEncoder(layer, layers, enable_nested_tensor=False)
-        self.residual = nn.Sequential(nn.Linear(hidden_dim, hidden_dim * 2), nn.SiLU(), nn.Linear(hidden_dim * 2, 32 * char_width), nn.Tanh())
-        self.scale = nn.Parameter(torch.tensor(0.1))
+        self.glyph_decoder = nn.Sequential(
+            nn.Linear(hidden_dim, hidden_dim * 2), nn.SiLU(),
+            nn.Linear(hidden_dim * 2, 32 * char_width), nn.Tanh(),
+        )
 
     def forward(self, glyphs: torch.Tensor, ids: torch.Tensor, padding_mask: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         b, length = ids.shape
         encoded = self.image_encoder(glyphs.reshape(b * length, 1, 32, self.char_width)).reshape(b, length, -1)
         tokens = encoded + self.character(ids) + self.position[:, :length]
         context = self.transformer(tokens, src_key_padding_mask=padding_mask)
-        correction = self.residual(context).view(b, length, 1, 32, self.char_width)
-        images = (glyphs + self.scale.tanh() * correction).clamp(-1, 1)
+        # Direct contextual decoding: glyphs interact through self-attention,
+        # then each contextual token is decoded as the complete refined glyph.
+        images = self.glyph_decoder(context).view(b, length, 1, 32, self.char_width)
         return images, context
 
 

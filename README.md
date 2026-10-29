@@ -38,13 +38,22 @@ IAM is not redistributed. The IAM root must contain:
 
 ```text
 iam_dataset/
-|-- ascii/forms.txt       # form id -> real writer id (required)
+|-- ascii/forms.txt       # preferred form id -> real writer id
 |-- linux_gt.txt          # or train_gt.txt + val_gt.txt
 `-- words/...
 ```
 
-The IAM preparer creates deterministic writer-disjoint train/validation/test
-manifests. The independent stage-1 character classifier does not read IAM:
+The Kaggle preset targets `ngkinwang/iam-dataset`, mounted at
+`/kaggle/input/iam-dataset/iam_dataset`. It already provides `linux_gt.txt`,
+`train_gt.txt`, `val_gt.txt`, and word images. Without separate writer metadata,
+its `a01-000u`-style word folders are treated as pseudo-writers.
+
+The IAM preparer prefers `forms.txt` or XML writer metadata. It can also recover
+the mapping from a companion `writer_folder/form_id.png` tree (including a ZIP),
+such as the output of the Kaggle forms-dataset creator. As an explicit temporary
+fallback, `iam_folder_as_writer: true` treats each word folder as a pseudo-writer;
+those splits are not true writer-disjoint splits. The independent stage-1
+character classifier does not read IAM:
 its required supervision comes from EMNIST ByClass. Optional punctuation
 samples can be rendered from `.ttf`/`.otf` handwriting fonts. Every font must have a nearby
 `OFL.txt`, `LICENSE.txt`, `LICENSE`, or `UFL.txt` file.
@@ -138,24 +147,22 @@ ending the session.
 
 ## Remaining stages
 
+The controlled character-ablation path trains directly on IAM. GNU Unifont is
+the same frozen content prior as WriteViT; the only experimental addition is
+the explicit character branch and its auxiliary losses.
+
 ```bash
-python -m charwritevit.cli.train_synthetic \
-  --config configs/kaggle.yaml \
-  --classifier outputs/classifier/best.pt \
-  --output outputs/synthetic
-
-python -m charwritevit.cli.train_ocr \
-  --config configs/kaggle.yaml \
-  --output outputs/ocr
-
 python -m charwritevit.cli.train_iam \
   --config configs/kaggle.yaml \
   --classifier outputs/classifier/best.pt \
-  --ocr outputs/ocr/latest.pt \
-  --synthetic-checkpoint outputs/synthetic/latest.pt \
   --warmup-epochs 5 \
   --output outputs/iam
 ```
+
+The OCR recognizer follows WriteViT's joint-critic schedule: it learns from
+real IAM words, is temporarily frozen for fake-word CTC generator updates, and
+is stored in the same full checkpoint. `--ocr` remains optional when an OCR
+initialization checkpoint is available.
 
 Edge reconstruction is logged as a diagnostic but its training weight is zero
 by default. It should only be enabled after inspecting baseline results.

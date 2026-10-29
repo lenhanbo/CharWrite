@@ -42,12 +42,17 @@ def _ssim(x, y):
 
 
 def main():
-    p=argparse.ArgumentParser(); p.add_argument("--config",required=True); p.add_argument("--checkpoint",required=True); p.add_argument("--classifier",required=True); p.add_argument("--ocr",required=True); p.add_argument("--output",required=True); p.add_argument("--max-batches",type=int,default=100); args=p.parse_args()
+    p=argparse.ArgumentParser(); p.add_argument("--config",required=True); p.add_argument("--checkpoint",required=True); p.add_argument("--classifier",required=True); p.add_argument("--ocr"); p.add_argument("--output",required=True); p.add_argument("--max-batches",type=int,default=100); args=p.parse_args()
     cfg=load_config(args.config); device=resolve_device(); vocab=load_vocab(cfg); dc=cfg["data"]
     ds=IAMWordDataset(Path(dc["prepared_dir"])/"test.json",vocab,references=int(dc.get("style_references",4))); loader=DataLoader(ds,batch_size=8,collate_fn=lambda b:collate_iam(b,vocab.pad_id))
     model=build_generator(cfg,vocab).to(device); state=load_checkpoint(args.checkpoint,device); model.load_state_dict(state.get("generator",state.get("model"))); model.eval()
     classifier=CharacterClassifier(len(vocab)).to(device); classifier.load_state_dict(load_checkpoint(args.classifier,device)["model"]); classifier.eval()
-    ocr=WordOCR(len(vocab)).to(device); ocr.load_state_dict(load_checkpoint(args.ocr,device)["model"]); ocr.eval()
+    ocr=WordOCR(len(vocab)).to(device)
+    if args.ocr:
+        ocr_state=load_checkpoint(args.ocr,device); ocr.load_state_dict(ocr_state.get("ocr",ocr_state.get("model")))
+    elif "ocr" in state: ocr.load_state_dict(state["ocr"])
+    else: raise ValueError("Checkpoint has no joint OCR state; provide --ocr for a legacy checkpoint")
+    ocr.eval()
     writer_map=state.get("writer_to_id",{}); style=WriterStyleNetwork(max(1,len(writer_map)),int(cfg["model"].get("style_dim",128))).to(device)
     if "style" in state: style.load_state_dict(state["style"])
     style.eval(); pixels=[]; edges=[]; ssims=[]; raw_correct=ctx_correct=char_total=edits=characters=words=exact=style_hits=style_total=0

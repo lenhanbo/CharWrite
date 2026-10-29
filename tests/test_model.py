@@ -64,6 +64,13 @@ def test_word_loss_reaches_glyph_context_and_multiscale_path():
     assert model.glyph_fusion.to_rgb1.weight.grad is not None
 
 
+def test_contextualizer_decodes_direct_glyphs_without_pixel_residual():
+    model=tiny_model()
+    assert not hasattr(model.contextualizer,"scale")
+    assert not hasattr(model.contextualizer,"residual")
+    assert hasattr(model.contextualizer,"glyph_decoder")
+
+
 def test_frozen_classifier_still_sends_gradient_to_glyphs():
     classifier = CharacterClassifier(12, width=8).requires_grad_(False)
     glyphs = torch.randn(1, 2, 1, 32, 16, requires_grad=True)

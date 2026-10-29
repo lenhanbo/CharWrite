@@ -7,7 +7,7 @@ inspected.
 This stage does **not** read IAM. Attach `crawford/emnist`. A licensed
 handwriting-font dataset is optional: without it the classifier trains on the
 62 EMNIST alphanumeric classes, while punctuation remains untrained. IAM is
-needed by later OCR and generator stages.
+needed by the later joint OCR/generator stage.
 
 When fonts are present, training remains a single stage. Each epoch contains
 75% EMNIST alphanumeric samples and 25% font-rendered punctuation samples by
@@ -116,8 +116,9 @@ Before closing Kaggle, use **Save Version** or archive the output:
 tar -czf /kaggle/working/charwritevit-classifier.tgz outputs/classifier
 ```
 
-Use `outputs/classifier/best.pt` for the next synthetic-glyph stage.
+Use `outputs/classifier/best.pt` as the frozen character evaluator during the
+IAM character-ablation experiment.
 
 Stop the notebook here. Do not run `prepare_iam`, `train_synthetic`,
-`train_ocr`, or `train_iam` in this stage. They require IAM and/or licensed
-fonts and are intentionally not part of the classifier notebook.
+`train_ocr`, or `train_iam` in this classifier stage. IAM/OCR and end-to-end
+word training are intentionally handled separately.

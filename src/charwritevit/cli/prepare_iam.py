@@ -1,23 +1,28 @@
 from __future__ import annotations
 
 import argparse
+import warnings
 from pathlib import Path
 
 from charwritevit.config import load_config
-from charwritevit.data.iam import build_writer_splits, find_forms_file, parse_forms, parse_manifest, save_splits
+from charwritevit.data.iam import build_writer_splits, find_words_file, load_writer_mapping, parse_iam_words, parse_manifest, save_splits
 from charwritevit.data.vocab import CharacterVocabulary
 
 
 def main():
     parser = argparse.ArgumentParser(); parser.add_argument("--config", required=True); parser.add_argument("--manifest")
     args = parser.parse_args(); cfg = load_config(args.config); data = cfg["data"]
-    root = Path(data["iam_root"]); forms = parse_forms(find_forms_file(root))
+    root = Path(data["iam_root"]); folder_as_writer=bool(data.get("iam_folder_as_writer",False))
+    forms = load_writer_mapping(root,data.get("iam_forms_by_writer_root"),folder_as_writer)
+    if not forms:
+        warnings.warn("Using each word-image folder as a pseudo-writer. Splits are folder-disjoint, not true writer-disjoint.")
     manifest = Path(args.manifest) if args.manifest else root / "linux_gt.txt"
-    if not manifest.is_file():
-        manifest = root / "train_gt.txt"
-    records = parse_manifest(manifest, root, forms)
+    if not manifest.is_file(): manifest = root / "train_gt.txt"
+    official_words=False
+    if not manifest.is_file(): manifest=find_words_file(root); official_words=True
+    records = parse_iam_words(manifest,root,forms,folder_as_writer) if official_words or manifest.name=="words.txt" else parse_manifest(manifest, root, forms,folder_as_writer)
     if manifest.name == "train_gt.txt" and (root / "val_gt.txt").is_file():
-        records += parse_manifest(root / "val_gt.txt", root, forms)
+        records += parse_manifest(root / "val_gt.txt", root, forms,folder_as_writer)
         records = list({r["word_id"]: r for r in records}.values())
     allowed = set(cfg["model"]["alphabet"]); max_len = int(data.get("max_word_length", 24))
     records = [r for r in records if 0 < len(r["text"]) <= max_len and set(r["text"]) <= allowed and Path(r["path"]).is_file()]

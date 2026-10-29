@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import random
+import xml.etree.ElementTree as ET
+import zipfile
 from collections import defaultdict
 from pathlib import Path
 import torch
@@ -32,10 +34,95 @@ def find_forms_file(root: str | Path) -> Path:
     for candidate in candidates:
         if candidate.is_file():
             return candidate
-    raise FileNotFoundError("IAM forms.txt is required; expected iam_root/ascii/forms.txt or iam_root/forms.txt")
+    raise FileNotFoundError("IAM forms.txt was not found")
 
 
-def parse_manifest(path: str | Path, root: str | Path, form_to_writer: dict[str, str]) -> list[dict]:
+def parse_xml_writer_mapping(root: str | Path) -> dict[str,str]:
+    """Recover form-to-writer metadata from official IAM form XML files."""
+    mapping={}
+    for path in Path(root).rglob("*.xml"):
+        try: xml_root=ET.parse(path).getroot()
+        except ET.ParseError: continue
+        for element in xml_root.iter():
+            if element.tag.rsplit("}",1)[-1] != "form": continue
+            form_id=element.attrib.get("id") or element.attrib.get("form-id")
+            writer=element.attrib.get("writer-id") or element.attrib.get("writer_id") or element.attrib.get("writer")
+            if form_id and writer: mapping[str(form_id)]=str(writer)
+    if not mapping:
+        raise FileNotFoundError("IAM writer metadata is missing: provide forms.txt or form XML files containing id and writer-id")
+    return mapping
+
+
+def parse_forms_by_writer(root: str | Path) -> dict[str,str]:
+    """Recover form-to-writer mapping from writer_folder/form_id.png trees or ZIPs."""
+    base=Path(root); mapping={}
+
+    def add(parts: tuple[str,...]) -> None:
+        if len(parts)<2 or not parts[-1].lower().endswith(".png"): return
+        form_id=Path(parts[-1]).stem; writer=parts[-2]
+        previous=mapping.get(form_id)
+        if previous is not None and previous!=writer: raise ValueError(f"Form {form_id} occurs under writers {previous} and {writer}")
+        mapping[form_id]=writer
+
+    if base.exists():
+        for image in base.rglob("*.png"): add(tuple(image.relative_to(base).parts))
+        for archive in base.rglob("*.zip"):
+            with zipfile.ZipFile(archive) as handle:
+                for name in handle.namelist(): add(tuple(Path(name).parts))
+    if not mapping: raise FileNotFoundError(f"No writer_folder/form_id.png mapping found under {base}")
+    return mapping
+
+
+def load_writer_mapping(root: str | Path, forms_by_writer_root: str | Path | None = None,
+                        allow_folder_as_writer: bool = False) -> dict[str,str]:
+    try: return parse_forms(find_forms_file(root))
+    except FileNotFoundError:
+        try: return parse_xml_writer_mapping(root)
+        except FileNotFoundError:
+            if forms_by_writer_root:
+                try: return parse_forms_by_writer(forms_by_writer_root)
+                except FileNotFoundError: pass
+            if allow_folder_as_writer: return {}
+            raise FileNotFoundError("IAM writer metadata is missing: attach forms.txt/XML or a writer_folder/form_id.png dataset")
+
+
+def find_words_file(root: str | Path) -> Path:
+    base=Path(root); candidates=[base/"ascii"/"words.txt",base/"words.txt"]
+    for candidate in candidates:
+        if candidate.is_file(): return candidate
+    matches=list(base.rglob("words.txt"))
+    if matches: return matches[0]
+    raise FileNotFoundError("Expected linux_gt.txt/train_gt.txt or official IAM ascii/words.txt")
+
+
+def parse_iam_words(path: str | Path, root: str | Path, form_to_writer: dict[str,str],
+                    folder_as_writer: bool = False) -> list[dict]:
+    """Parse official IAM words.txt and resolve its standard word-image tree."""
+    base=Path(root); word_roots=[]
+    for candidate in [base/"words",base,*[p for p in base.rglob("words") if p.is_dir()]]:
+        if candidate not in word_roots: word_roots.append(candidate)
+    records=[]
+    for raw in Path(path).read_text(encoding="utf-8",errors="replace").splitlines():
+        line=raw.strip()
+        if not line or line.startswith("#"): continue
+        fields=line.split(maxsplit=8)
+        if len(fields)<9: raise ValueError(f"Malformed IAM words.txt row: {raw!r}")
+        word_id,status,text=fields[0],fields[1],fields[8]
+        if status.lower()!="ok": continue
+        form_id="-".join(word_id.split("-")[:2])
+        relative=Path(word_id.split("-")[0])/form_id/f"{word_id}.png"
+        candidates=[directory/relative for directory in word_roots]
+        image_path=next((candidate for candidate in candidates if candidate.is_file()),candidates[0])
+        writer=form_to_writer.get(form_id)
+        if writer is None and folder_as_writer: writer=image_path.parent.name
+        if writer is None: raise KeyError(f"No writer mapping for IAM form {form_id}")
+        records.append({"path":str(image_path.resolve()),"text":text,"word_id":word_id,
+                        "form_id":form_id,"writer_id":writer})
+    return records
+
+
+def parse_manifest(path: str | Path, root: str | Path, form_to_writer: dict[str, str],
+                   folder_as_writer: bool = False) -> list[dict]:
     records: list[dict] = []
     base = Path(root)
     for raw in Path(path).read_text(encoding="utf-8", errors="replace").splitlines():
@@ -44,12 +131,13 @@ def parse_manifest(path: str | Path, root: str | Path, form_to_writer: dict[str,
         relative, text = raw.split("\t", 1)
         word_id = Path(relative).stem
         form_id = "-".join(word_id.split("-")[:2])
-        if form_id not in form_to_writer:
-            raise KeyError(f"No writer mapping for IAM form {form_id}")
         image_path = base / Path(relative)
+        writer=form_to_writer.get(form_id)
+        if writer is None and folder_as_writer: writer=image_path.parent.name
+        if writer is None: raise KeyError(f"No writer mapping for IAM form {form_id}")
         records.append({
             "path": str(image_path.resolve()), "text": text, "word_id": word_id,
-            "form_id": form_id, "writer_id": form_to_writer[form_id],
+            "form_id": form_id, "writer_id": writer,
         })
     return records
 
