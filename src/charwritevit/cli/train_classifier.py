@@ -15,7 +15,7 @@ from charwritevit.data.emnist import build_emnist_dataset
 from charwritevit.data.synthetic import SyntheticCharacterDataset, discover_fonts
 from charwritevit.models.auxiliary import CharacterClassifier
 from charwritevit.train.preview import MetricHistory, save_classifier_preview
-from charwritevit.train.utils import amp_context, make_scaler, optimizer_step, resolve_device, save_checkpoint, seed_everything
+from charwritevit.train.utils import amp_context, make_scaler, make_warmup_cosine_scheduler, optimizer_step, resolve_device, save_checkpoint, seed_everything
 
 
 def main():
@@ -44,17 +44,25 @@ def main():
         validation_sets.append(SyntheticCharacterDataset(fonts,vocab,samples=int(tc.get("classifier_synthetic_val_samples",10000)),characters=punctuation))
     validation=ConcatDataset(validation_sets)
     validation_loader=DataLoader(validation,batch_size=classifier_batch,shuffle=False,num_workers=int(tc.get("num_workers",2)),pin_memory=True)
-    model=CharacterClassifier(len(vocab)).to(device); opt=torch.optim.AdamW(model.parameters(),lr=float(tc.get("classifier_learning_rate",tc["learning_rate"]))); scaler=make_scaler(device,tc.get("amp",True))
-    epochs=args.epochs or int(tc.get("classifier_epochs",tc["epochs"])); step=0; start_epoch=0; best_accuracy=0.0; history=MetricHistory(args.output)
+    epochs=args.epochs or int(tc.get("classifier_epochs",tc["epochs"])); accumulation=int(tc.get("classifier_accumulation_steps",1))
+    model=CharacterClassifier(len(vocab)).to(device); base_lr=float(tc.get("classifier_learning_rate",tc["learning_rate"])); opt=torch.optim.AdamW(model.parameters(),lr=base_lr); scaler=make_scaler(device,tc.get("amp",True))
+    updates_per_epoch=max(1,len(loader)//accumulation); total_updates=max(1,updates_per_epoch*epochs)
+    warmup_updates=min(total_updates-1,round(updates_per_epoch*float(tc.get("classifier_warmup_epochs",1.0))))
+    min_lr=float(tc.get("classifier_min_learning_rate",1e-5)); scheduler=make_warmup_cosine_scheduler(opt,total_updates,warmup_updates,min_lr/base_lr)
+    step=0; start_epoch=0; best_accuracy=0.0; history=MetricHistory(args.output)
     if args.resume:
         state=torch.load(args.resume,map_location=device,weights_only=False); model.load_state_dict(state["model"]); opt.load_state_dict(state["optimizer"]); scaler.load_state_dict(state.get("scaler",{})); step=int(state.get("step",0)); start_epoch=int(state.get("epoch",-1))+1; best_accuracy=float(state.get("best_accuracy",0.0))
+        if "scheduler" not in state: raise ValueError("Resume checkpoint predates the LR scheduler; restart classifier training so the schedule is well-defined")
+        if int(state.get("scheduler_total_updates",-1)) != total_updates: raise ValueError("Resume must use the same total --epochs as the original scheduler run")
+        scheduler.load_state_dict(state["scheduler"])
     for epoch in range(start_epoch, epochs):
         model.train(); train_loss=train_correct=train_count=0
         for images,labels in loader:
             images,labels=images.to(device),labels.to(device)
             with amp_context(device,tc.get("amp",True)): logits=model(images); loss=F.cross_entropy(logits,labels)
             with torch.no_grad(): train_loss+=float(loss.detach())*labels.numel(); train_correct+=(logits.argmax(-1)==labels).sum().item(); train_count+=labels.numel()
-            optimizer_step(loss,opt,scaler,int(tc.get("classifier_accumulation_steps",1)),step); step+=1
+            if optimizer_step(loss,opt,scaler,accumulation,step): scheduler.step()
+            step+=1
             if args.max_steps and step>=args.max_steps: break
         model.eval(); val_loss=val_correct=val_count=0; preview=None; class_correct=torch.zeros(len(vocab),dtype=torch.long); class_count=torch.zeros(len(vocab),dtype=torch.long)
         with torch.inference_mode():
@@ -71,7 +79,7 @@ def main():
         (Path(args.output)/"per_class_accuracy.json").write_text(json.dumps({vocab.tokens[index]:float(per_class[index]) for index in range(len(vocab)) if observed[index]},ensure_ascii=False,indent=2),encoding="utf-8")
         if preview is not None: save_classifier_preview(*preview,vocab.tokens,Path(args.output)/"preview"/f"epoch_{epoch:03d}.png",int(tc.get("preview_samples",16)))
         score=metrics["val_macro_accuracy"]; best_accuracy=max(best_accuracy,score)
-        checkpoint=dict(model=model.state_dict(),optimizer=opt.state_dict(),scaler=scaler.state_dict(),epoch=epoch,step=step,best_accuracy=best_accuracy,config=cfg)
+        checkpoint=dict(model=model.state_dict(),optimizer=opt.state_dict(),scheduler=scheduler.state_dict(),scheduler_total_updates=total_updates,scaler=scaler.state_dict(),epoch=epoch,step=step,best_accuracy=best_accuracy,config=cfg)
         save_checkpoint(Path(args.output)/"latest.pt",**checkpoint)
         if score>=best_accuracy: save_checkpoint(Path(args.output)/"best.pt",**checkpoint)
         print(metrics)

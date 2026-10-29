@@ -84,11 +84,18 @@ python -m charwritevit.cli.train_classifier \
 The default classifier settings are independent from the larger generator:
 
 ```yaml
-classifier_epochs: 10
+classifier_epochs: 30
 classifier_batch_size: 256
 classifier_accumulation_steps: 1
 classifier_learning_rate: 0.001
+classifier_min_learning_rate: 0.00001
+classifier_warmup_epochs: 1.0
 ```
+
+The classifier uses one epoch of linear warmup followed by cosine decay to the
+minimum learning rate. Scheduler state is checkpointed. Resume with the same
+total `--epochs` chosen for the original run; changing it would redefine the
+cosine curve.
 
 `best.pt` is selected by macro validation accuracy rather than overall accuracy,
 so rare punctuation cannot be hidden by the much larger EMNIST alphanumeric
@@ -110,3 +117,7 @@ tar -czf /kaggle/working/charwritevit-classifier.tgz outputs/classifier
 ```
 
 Use `outputs/classifier/best.pt` for the next synthetic-glyph stage.
+
+Stop the notebook here. Do not run `prepare_iam`, `train_synthetic`,
+`train_ocr`, or `train_iam` in this stage. They require IAM and/or licensed
+fonts and are intentionally not part of the classifier notebook.

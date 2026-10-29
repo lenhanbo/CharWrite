@@ -33,10 +33,12 @@ train:
   batch_size: 8
   accumulation_steps: 4
   epochs: 40
-  classifier_epochs: 10
+  classifier_epochs: 30
   classifier_batch_size: 256
   classifier_accumulation_steps: 1
   classifier_learning_rate: 0.001
+  classifier_min_learning_rate: 0.00001
+  classifier_warmup_epochs: 1.0
   classifier_synthetic_fraction: 0.25
   classifier_synthetic_val_samples: 10000
   learning_rate: 0.0002

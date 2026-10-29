@@ -59,6 +59,8 @@ disabled and not instantiated by default.
 
 All stages support AMP, gradient accumulation, checkpoint resume, fixed seeds,
 and a Kaggle single-GPU preset.
+The classifier uses one epoch of linear LR warmup followed by cosine decay;
+optimizer, scaler, and scheduler state are saved together for exact resume.
 
 ## Preview and evaluation
 
