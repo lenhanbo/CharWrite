@@ -35,7 +35,7 @@ model:
 train:
   batch_size: 32
   accumulation_steps: 4
-  epochs: 40
+  epochs: 10
   classifier_epochs: 30
   classifier_batch_size: 256
   classifier_accumulation_steps: 1
