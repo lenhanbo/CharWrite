@@ -18,7 +18,7 @@ def main():
     device=resolve_device(); vocab=load_vocab(cfg); tc=cfg["train"]; dc=cfg["data"]
     ds=IAMWordDataset(Path(dc["prepared_dir"])/"train.json",vocab,int(dc.get("image_height",32)),int(dc.get("char_width",16)),int(dc.get("max_word_length",24)),int(dc.get("style_references",4)),bool(dc.get("iam_validate_images",True)))
     loader=DataLoader(ds,batch_size=int(tc["batch_size"]),shuffle=True,num_workers=int(tc.get("num_workers",2)),collate_fn=lambda b:collate_iam(b,vocab.pad_id))
-    model=WordOCR(len(vocab)).to(device); opt=torch.optim.AdamW(model.parameters(),lr=float(tc["learning_rate"])); scaler=make_scaler(device,tc.get("amp",True)); criterion=CTCLoss(blank=vocab.blank_id,zero_infinity=True)
+    model=WordOCR(len(vocab)).to(device); opt=torch.optim.Adam(model.parameters(),lr=float(tc.get("ocr_learning_rate",tc["learning_rate"])),betas=(0.0,0.999),weight_decay=0.0,eps=1e-8); scaler=make_scaler(device,tc.get("amp",True)); criterion=CTCLoss(blank=vocab.blank_id,zero_infinity=True)
     step=0; start_epoch=0
     if args.resume:
         state=torch.load(args.resume,map_location=device,weights_only=False); model.load_state_dict(state["model"]); opt.load_state_dict(state["optimizer"]); scaler.load_state_dict(state.get("scaler",{})); step=int(state.get("step",0)); start_epoch=int(state.get("epoch",-1))+1

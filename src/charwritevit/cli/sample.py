@@ -25,8 +25,8 @@ def main():
     with torch.inference_mode(): out=model(ids,references)
     root=Path(args.output); root.mkdir(parents=True,exist_ok=True)
     for i,char in enumerate(args.text):
-        tensor_to_pil(out["raw_glyphs"][0,i]).save(root/f"{i:02d}_{ord(char):04x}_raw.png")
-        tensor_to_pil(out["contextual_glyphs"][0,i]).save(root/f"{i:02d}_{ord(char):04x}_context.png")
+        tensor_to_pil(out["gnu_glyphs"][0,i]).save(root/f"{i:02d}_{ord(char):04x}_gnu.png")
+        tensor_to_pil(out["styled_glyphs"][0,i]).save(root/f"{i:02d}_{ord(char):04x}_styled.png")
     tensor_to_pil(out["coarse_word"][0]).save(root/"coarse.png"); tensor_to_pil(out["word"][0]).save(root/"word.png")
     print(root/"word.png")
 

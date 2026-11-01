@@ -3,34 +3,31 @@
 Character-first handwriting generation with a WriteViT-style backbone.
 
 ```text
-text + writer references
+writer references --------------------> independent WriteViT Writer Encoder
         |
-        +--> ViT writer encoder
-        |
-GNU Unifont content tokens
-        |
-        +--> per-character glyph images --> character classifier loss
-        |              |
-        |              +--> bidirectional character contextualizer
-        |                              |
-        +------------------------------+
-                       |
-             [context; content]
-                       |
-                 [B, D, 2, L]
-                       |
-       multi-scale Transformer + CPE
-                       |
-          toRGB multi-scale fusion
-                       |
-        noise + ResBlock/CNN decoder
-                       |
-             final word [B,1,32,16L]
+        +--> independent character-style Writer Encoder
+                            |
+GNU Unifont tokens -> positional character Transformer
+                            |
+              characters self-attend + style cross-attend
+                            |
+          styled glyph preview + refined character tokens
+                            |
+                 replace GNU query in WriteViT
+                            |
+       original CrossBlocks -> [styled; refined] grid
+                            |
+       original multi-scale Transformer/CPE/toRGB
+                            |
+       original N(0,1) noise + ResBlock/CNN decoder
+                            |
+                 final word [B,1,32,16L]
 ```
 
-The merger is intentionally disabled for the baseline. It will only be added
-after the multi-scale generator has been trained and inspected. See
-`IMPLEMENTATION_PLAN.md` for the persistent implementation brief.
+The only generator change from WriteViT is the character-refinement module
+inserted between GNU Unifont and the released WriteViT generator. Its style
+encoder is independent from WriteViT's Writer Encoder. There is no merger or
+post-generator correction in the baseline.
 
 ## Data
 
@@ -52,9 +49,8 @@ The IAM preparer prefers `forms.txt` or XML writer metadata. It can also recover
 the mapping from a companion `writer_folder/form_id.png` tree (including a ZIP),
 such as the output of the Kaggle forms-dataset creator. As an explicit temporary
 fallback, `iam_folder_as_writer: true` treats each word folder as a pseudo-writer;
-those splits are not true writer-disjoint splits. The independent stage-1
-character classifier does not read IAM:
-its required supervision comes from EMNIST ByClass. Optional punctuation
+those splits are not true writer-disjoint splits. The joint character critic
+learns from EMNIST ByClass while IAM training runs. Optional punctuation
 samples can be rendered from `.ttf`/`.otf` handwriting fonts. Every font must have a nearby
 `OFL.txt`, `LICENSE.txt`, `LICENSE`, or `UFL.txt` file.
 When fonts are available, the classifier trains both sources together using a
@@ -72,9 +68,7 @@ cd CharWriteViT
 pip install -e .
 ```
 
-## First stage on Kaggle: character classifier
-
-The expanded step-by-step guide is in `docs/KAGGLE_CLASSIFIER.md`.
+## Joint training on Kaggle
 
 Attach a handwriting-font dataset with this structure:
 
@@ -96,77 +90,77 @@ data:
   prepared_dir: /kaggle/working/charwritevit-data/iam
 ```
 
-Validate EMNIST and discover licensed fonts (IAM is not used by this command):
+Validate EMNIST and discover licensed fonts:
 
 ```bash
 python -m charwritevit.cli.prepare_char_data \
   --config configs/kaggle.yaml
 ```
 
-Run a short smoke test first:
+Prepare IAM:
 
 ```bash
-python -m charwritevit.cli.train_classifier \
-  --config configs/kaggle.yaml \
-  --output outputs/classifier-smoke \
-  --epochs 1 \
-  --max-steps 20
+python -m charwritevit.cli.prepare_iam --config configs/kaggle.yaml
 ```
 
-Then run the complete classifier stage:
-
-```bash
-python -m charwritevit.cli.train_classifier \
-  --config configs/kaggle.yaml \
-  --output outputs/classifier
-```
-
-The stage writes:
-
-```text
-outputs/classifier/
-|-- latest.pt
-|-- best.pt
-|-- metrics.jsonl
-|-- classifier_curves.png
-`-- preview/epoch_XXX.png
-```
-
-Each preview shows the input character, true label, predicted label, and model
-confidence. Resume an interrupted Kaggle session with:
-
-```bash
-python -m charwritevit.cli.train_classifier \
-  --config configs/kaggle.yaml \
-  --output outputs/classifier \
-  --resume outputs/classifier/latest.pt
-```
-
-Archive `outputs/classifier` as a Kaggle notebook output or Kaggle Dataset before
-ending the session.
-
-## Remaining stages
-
-The controlled character-ablation path trains directly on IAM. GNU Unifont is
-the same frozen content prior as WriteViT; the only experimental addition is
-the explicit character branch and its auxiliary losses.
+Run a short joint smoke test:
 
 ```bash
 python -m charwritevit.cli.train_iam \
   --config configs/kaggle.yaml \
-  --classifier outputs/classifier/best.pt \
-  --warmup-epochs 5 \
+  --output outputs/iam-smoke \
+  --epochs 1 \
+  --max-steps 2
+```
+
+Then run the complete joint stage:
+
+```bash
+python -m charwritevit.cli.train_iam \
+  --config configs/kaggle.yaml \
   --output outputs/iam
 ```
 
-The OCR recognizer follows WriteViT's joint-critic schedule: it learns from
-real IAM words, is temporarily frozen for fake-word CTC generator updates, and
-is stored in the same full checkpoint. `--ocr` remains optional when an OCR
-initialization checkpoint is available.
+The character classifier is trained on real EMNIST/font glyphs every critic
+batch. During generator updates it is frozen, while its styled-glyph CE still
+backpropagates through the character decoder and refiner. This mirrors the
+real/fake training roles of WriteViT's OCR and Writer ID critics. Resume all
+networks together with:
+
+```bash
+python -m charwritevit.cli.train_iam \
+  --config configs/kaggle.yaml \
+  --output outputs/iam \
+  --resume outputs/iam/latest.pt
+```
+
+The OCR recognizer follows WriteViT's joint-critic schedule. Adam uses
+`betas=(0, 0.999)`, no weight decay, and learning rate `5e-5`;
+D/OCR/Writer/Character are updated every batch and G every second batch. There
+is no GAN warmup or mandatory pretrained auxiliary checkpoint.
 
 Full IAM training has no paired pixel or edge reconstruction loss. Real IAM
-images train the recognizer, writer network, and discriminator; generated words
-are supervised by character CE, OCR/CTC, style consistency, and GAN losses.
+images train the recognizer, writer network, and discriminator; real EMNIST/font
+glyphs train the character classifier; generated words/glyphs are supervised by
+character CE, OCR/CTC, writer identity, and GAN losses.
+
+## Evaluation (including FID/KID)
+
+```bash
+python -m charwritevit.cli.evaluate \
+  --config configs/kaggle.yaml \
+  --checkpoint outputs/iam/latest.pt \
+  --output outputs/iam/evaluation \
+  --max-batches 100 \
+  --kid-subset-size 100
+```
+
+Evaluation pads all real/generated words to the configured maximum width,
+converts grayscale to RGB `[0,1]`, and accumulates standard Inception-2048 FID
+and KID alongside CER, word accuracy, SSIM, styled-character accuracy, and style
+retrieval. Results are written to `evaluation/metrics.json`. The first run may
+download and cache Inception weights; on an offline Kaggle run attach the weight
+file and pass `--inception-weights /kaggle/input/.../weights.pth`.
 
 ## Sampling
 
@@ -180,9 +174,14 @@ python -m charwritevit.cli.sample \
   --output outputs/sample
 ```
 
-Sampling writes each raw/contextual glyph plus `coarse.png` and `word.png`.
+Sampling writes each GNU/styled glyph plus `coarse.png` and `word.png`.
 Training previews plot losses over time and save character-level and word-level
-images using fixed validation samples and noise seeds.
+images using ten fixed validation samples and a fixed noise seed. Every preview
+epoch writes `sample_XX_characters.png` (GNU versus decoded styled glyphs),
+`sample_XX_scales.png` (Scale 1-4 energy, toRGB/noise fusion, final decode), and
+`sample_XX_word.png` (reference, real target, final output). Multi-channel scale
+features are rendered as normalized mean absolute channel energy rather than as
+fake grayscale word images.
 
 ## Tests
 

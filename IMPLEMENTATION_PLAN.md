@@ -18,67 +18,59 @@ convolutional decoder.
    word-image folder as a pseudo-writer; those splits are only folder-disjoint.
    All EMNIST, synthetic-font, and IAM images are polarity-normalized to black
    ink on white background before resizing and scaling to `[-1, 1]`.
-2. Encode every character with a frozen 16x16 GNU Unifont table plus a learned
-   embedding and trainable projection.
-3. Encode same-writer reference words with a ViT Writer Encoder.
-4. Cross-attend content tokens to writer tokens and decode one visible 32x16
-   raw glyph per character.
-5. Encode raw glyphs and apply a bidirectional character Transformer so every
-   character attends to the others. Decode each contextual token directly into
-   the complete contextual glyph; do not add a residual pixel correction to
-   the raw glyph. Produce contextual glyph images and context tokens.
-6. Inject context tokens into styled content tokens, concatenate them with raw
-   content tokens, and reshape `[B,2L,D]` to `[B,D,2,L]`.
-7. Run the WriteViT multi-scale path: upsample, Transformer blocks, CPE/PosCNN,
+2. Encode every character with the frozen 16x16 GNU Unifont table and its
+   trainable linear projection, matching WriteViT's query embedding.
+3. Use a dedicated character-style Writer Encoder. Add sinusoidal positional
+   encoding to GNU tokens, let all character tokens self-attend, then
+   cross-attend to this character-style path. Decode visible 32x16 styled
+   glyphs for auxiliary supervision.
+4. Use a second, independent Writer Encoder for the original WriteViT path.
+   The refined character tokens replace GNU tokens at both locations where the
+   original generator consumed its GNU query (`tmp` and positional query).
+5. From that replacement point onward retain WriteViT exactly: five CrossBlocks,
+   concatenate `[styled; refined]`, LayerNorm, and reshape to `[B,D,2,L]`.
+6. Run the WriteViT multi-scale path: upsample, Transformer blocks, CPE/PosCNN,
    three toRGB projections, multi-scale summation, seeded Gaussian feature
    noise, and ResBlock/CNN decoding to `[B,1,32,16L]`.
-8. Treat the multi-scale decoder output as the final word for the baseline.
+7. Treat the multi-scale decoder output as the final word for the baseline.
 
-The contextualizer remains an ablation. The merger and its separate style path
-are explicitly deferred until the baseline is trained and inspected; they are
-disabled and not instantiated by default.
+There is no merger, whole-word contextualizer, learned token embedding, or
+post-generator correction in this baseline.
 
 ## Auxiliary networks and losses
 
-- Character classifier: EMNIST ByClass plus licensed synthetic-font glyphs;
-  frozen during generator training.
+- Character classifier: trained jointly on real EMNIST ByClass plus licensed
+  synthetic-font glyphs; frozen only during generator updates, where its CE
+  gradient passes through styled glyphs into the character refiner.
 - Recognizer: WriteViT-style ResNet18 patch encoder + ViT blocks + CTC head;
   trained jointly on real IAM words and frozen only during generator updates.
 - Discriminator: spectral-normalized residual/BigGAN-style discriminator.
 - Writer identification: ViT Writer Encoder with classification head.
-- Full IAM losses: raw/context character CE, OCR CTC, writer/style consistency,
-  and hinge GAN. Full training has no paired pixel/edge reconstruction loss,
-  matching WriteViT's unpaired word-generation objective.
+- Full IAM losses: styled-character CE plus WriteViT's OCR CTC, writer
+  classification, gradient-balanced hinge GAN losses. Full training has no
+  paired pixel/edge reconstruction loss.
 
 ## Training stages
 
-1. Train and validate the character classifier using EMNIST ByClass. Licensed
-   synthetic-font glyphs are optional and add punctuation supervision in the
-   same training stage. Default epoch composition is 75% EMNIST and 25%
-   synthetic punctuation; font samples do not duplicate alphanumerics. Do not
-   load or prepare IAM in this stage.
-2. Prepare writer-disjoint IAM words.
-3. Train OCR on real IAM batches jointly with the complete character-frontend
-   + WriteViT word generator. Freeze OCR parameters only while fake-word CTC
-   updates the generator. Train directly
-   on real IAM word targets, initially without adversarial loss. GNU Unifont is
+1. Prepare EMNIST/font character supervision and writer-disjoint IAM words.
+2. Jointly train D, OCR, Writer ID, and Character Classifier on real samples
+   every batch. Train G every second batch with all four critics frozen while
+   their gradients still flow to generated words/glyphs. GNU Unifont is
    only the frozen content prior, exactly as in WriteViT; glyph bitmaps are not
    concatenated into the word target or passed as a coarse word image.
-4. The explicit raw/context glyph branch receives classifier supervision and
-   influences the unchanged WriteViT word path through context tokens.
-5. Enable alternating discriminator/generator updates and fine-tune.
+3. The styled-character branch receives classifier supervision and replaces
+   GNU query tokens before the otherwise unchanged WriteViT word path.
 
-All stages support AMP, gradient accumulation, checkpoint resume, fixed seeds,
-and a Kaggle single-GPU preset.
-The full IAM checkpoint contains generator, discriminator, writer network, OCR,
-all optimizers, and all AMP scaler states for exact joint resume.
-The classifier uses one epoch of linear LR warmup followed by cosine decay;
-optimizer, scaler, and scheduler state are saved together for exact resume.
+Joint training supports AMP, checkpoint resume, fixed seeds, and a Kaggle
+single-GPU preset. The full IAM checkpoint contains generator, discriminator,
+writer network, OCR, character classifier, all five optimizers, and all AMP
+scaler states for exact resume. The standalone classifier CLI remains only for
+optional initialization and ablation experiments.
 
 ## Preview and evaluation
 
 At fixed intervals use fixed validation samples and noise seeds. Save JSONL/CSV
-metrics and PNG loss curves. Save raw/context glyph grids with predicted class
+metrics and PNG loss curves. Save GNU/styled glyph grids with predicted class
 and confidence, plus reference, target, coarse-word, and final-word grids.
 Evaluation reports character accuracy, CER, exact word accuracy, SSIM, FID/KID
 when enough samples exist, and style retrieval.

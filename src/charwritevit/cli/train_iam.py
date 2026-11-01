@@ -1,111 +1,246 @@
 from __future__ import annotations
 
 from pathlib import Path
+import string
 import time
+import warnings
 
 import torch
 import torch.nn.functional as F
 from torch.nn import CTCLoss
-from torch.utils.data import DataLoader
+from torch.utils.data import ConcatDataset, DataLoader
 
 from charwritevit.cli.common import build_generator, load_vocab, training_parser
 from charwritevit.config import load_config
 from charwritevit.data.iam import IAMWordDataset, collate_iam
+from charwritevit.data.emnist import build_emnist_dataset
+from charwritevit.data.synthetic import SyntheticCharacterDataset, discover_fonts
 from charwritevit.losses import glyph_classification_loss, hinge_discriminator, hinge_generator
 from charwritevit.models.auxiliary import CharacterClassifier, PatchDiscriminator, WordOCR, WriterStyleNetwork
 from charwritevit.train.preview import MetricHistory, save_generator_preview
-from charwritevit.train.utils import amp_context, load_checkpoint, make_scaler, optimizer_step, resolve_device, save_checkpoint, seed_everything
+from charwritevit.train.utils import amp_context, load_checkpoint, make_scaler, resolve_device, save_checkpoint, seed_everything
 
 
-def _freeze(module): module.eval(); module.requires_grad_(False); return module
-def _grad(module, enabled): module.requires_grad_(enabled)
+def _set_grad(module: torch.nn.Module, enabled: bool) -> None:
+    module.requires_grad_(enabled)
+
+
+def _step(loss, optimizer, scaler) -> None:
+    optimizer.zero_grad(set_to_none=True)
+    scaler.scale(loss).backward()
+    scaler.step(optimizer)
+    scaler.update()
+
+
+def _ctc_loss(ctc, logits, ids, lengths):
+    targets=torch.cat([ids[index,:length] for index,length in enumerate(lengths.tolist())])
+    input_lengths=torch.full_like(lengths,logits.shape[1])
+    return ctc(logits.float().log_softmax(-1).transpose(0,1),targets,input_lengths,lengths)
+
+
+def _gradient_balance(adversarial, auxiliary, generated, coefficient=0.7):
+    adversarial_gradient=torch.autograd.grad(adversarial,generated,retain_graph=True)[0]
+    auxiliary_gradient=torch.autograd.grad(auxiliary,generated,retain_graph=True)[0]
+    return coefficient*adversarial_gradient.std().detach()/(1e-7+auxiliary_gradient.std().detach())
+
+
+def _build_character_loader(data_cfg, train_cfg, vocab):
+    fonts=discover_fonts(
+        data_cfg["fonts_dir"],bool(data_cfg.get("require_font_license",True)),
+        allow_empty=bool(data_cfg.get("classifier_fonts_optional",True)),
+    )
+    if not fonts:
+        warnings.warn("Joint character critic is using EMNIST only; punctuation needs licensed fonts")
+    cache=Path(data_cfg.get("emnist_cache",Path(data_cfg.get("char_prepared_dir","data/characters")).parent/"emnist-index"))
+    emnist=build_emnist_dataset(
+        data_cfg["emnist_root"],vocab,train=True,
+        download=bool(data_cfg.get("auto_download_emnist",True)),cache_dir=cache,
+    )
+    datasets=[emnist]
+    punctuation=[char for char in vocab.tokens[3:] if char not in string.ascii_letters+string.digits]
+    fraction=float(train_cfg.get("classifier_synthetic_fraction",0.25))
+    if fonts and punctuation and fraction>0:
+        synthetic_samples=round(len(emnist)*fraction/(1.0-fraction))
+        datasets.append(SyntheticCharacterDataset(fonts,vocab,synthetic_samples,characters=punctuation))
+    return DataLoader(
+        ConcatDataset(datasets),batch_size=int(train_cfg.get("classifier_batch_size",256)),
+        shuffle=True,num_workers=int(train_cfg.get("num_workers",0)),pin_memory=True,drop_last=True,
+    )
+
+
+def _next_character_batch(loader, iterator):
+    try: return next(iterator),iterator
+    except StopIteration:
+        iterator=iter(loader); return next(iterator),iterator
 
 
 def main():
-    parser=training_parser("Train character-augmented WriteViT end-to-end on IAM"); parser.add_argument("--classifier",required=True); parser.add_argument("--ocr"); parser.add_argument("--synthetic-checkpoint"); parser.add_argument("--warmup-epochs",type=int,default=5)
-    args=parser.parse_args(); cfg=load_config(args.config); seed_everything(int(cfg.get("seed",42))); device=resolve_device(); vocab=load_vocab(cfg); tc=cfg["train"]; dc=cfg["data"]; lc=cfg["loss"]
-    print(f"Initializing IAM training on {device} with config={args.config}",flush=True)
-    ds=IAMWordDataset(Path(dc["prepared_dir"])/"train.json",vocab,int(dc.get("image_height",32)),int(dc.get("char_width",16)),int(dc.get("max_word_length",24)),int(dc.get("style_references",4)),bool(dc.get("iam_validate_images",True)))
-    loader=DataLoader(ds,batch_size=int(tc["batch_size"]),shuffle=True,num_workers=int(tc.get("num_workers",2)),collate_fn=lambda b:collate_iam(b,vocab.pad_id),drop_last=True)
-    writer_ids=sorted({r["writer_id"] for r in ds.records}); writer_to_id={x:i for i,x in enumerate(writer_ids)}
-    print(f"IAM dataset ready: samples={len(ds)}, writers={len(writer_ids)}, batches/epoch={len(loader)}",flush=True)
-    print("Building generator and auxiliary networks",flush=True)
-    gen=build_generator(cfg,vocab).to(device)
-    if args.synthetic_checkpoint: gen.load_state_dict(load_checkpoint(args.synthetic_checkpoint,device)["model"])
-    print(f"Loading character classifier: {args.classifier}",flush=True)
-    classifier=_freeze(CharacterClassifier(len(vocab)).to(device)); classifier.load_state_dict(load_checkpoint(args.classifier,device)["model"])
+    parser=training_parser("Train the character-refined WriteViT baseline on IAM")
+    parser.add_argument("--classifier",help="Optional classifier initialization; joint training does not require it")
+    parser.add_argument("--ocr")
+    parser.add_argument("--synthetic-checkpoint")
+    # Retained only to fail loudly for old commands; WriteViT has no GAN warmup.
+    parser.add_argument("--warmup-epochs",type=int)
+    args=parser.parse_args()
+    if args.warmup_epochs not in (None,0):
+        raise ValueError("WriteViT parity mode has no GAN warmup; remove --warmup-epochs")
+
+    cfg=load_config(args.config); seed_everything(int(cfg.get("seed",42))); device=resolve_device()
+    vocab=load_vocab(cfg); train_cfg=cfg["train"]; data_cfg=cfg["data"]; loss_cfg=cfg["loss"]
+    dataset=IAMWordDataset(
+        Path(data_cfg["prepared_dir"])/"train.json",vocab,
+        int(data_cfg.get("image_height",32)),int(data_cfg.get("char_width",16)),
+        int(data_cfg.get("max_word_length",24)),int(data_cfg.get("style_references",1)),
+        bool(data_cfg.get("iam_validate_images",True)),
+    )
+    loader=DataLoader(
+        dataset,batch_size=int(train_cfg["batch_size"]),shuffle=True,
+        num_workers=int(train_cfg.get("num_workers",0)),
+        collate_fn=lambda batch:collate_iam(batch,vocab.pad_id),drop_last=True,
+    )
+    character_loader=_build_character_loader(data_cfg,train_cfg,vocab)
+    character_iterator=iter(character_loader)
+    preview_manifest=Path(data_cfg["prepared_dir"])/"val.json"
+    preview_dataset=IAMWordDataset(
+        preview_manifest if preview_manifest.is_file() else Path(data_cfg["prepared_dir"])/"train.json",
+        vocab,int(data_cfg.get("image_height",32)),int(data_cfg.get("char_width",16)),
+        int(data_cfg.get("max_word_length",24)),int(data_cfg.get("style_references",1)),
+        bool(data_cfg.get("iam_validate_images",True)),
+    )
+    if len(preview_dataset)<1:
+        preview_dataset=dataset
+    preview_count=min(int(train_cfg.get("preview_samples",10)),len(preview_dataset))
+    if preview_count < 1: raise ValueError("No samples are available for fixed previews")
+    fixed_preview_batch=next(iter(DataLoader(
+        preview_dataset,batch_size=preview_count,shuffle=False,num_workers=0,
+        collate_fn=lambda batch:collate_iam(batch,vocab.pad_id),
+    )))
+    writer_ids=sorted({record["writer_id"] for record in dataset.records})
+    writer_to_id={writer:index for index,writer in enumerate(writer_ids)}
+
+    generator=build_generator(cfg,vocab).to(device)
+    if args.synthetic_checkpoint:
+        generator.load_state_dict(load_checkpoint(args.synthetic_checkpoint,device)["model"])
+    classifier=CharacterClassifier(len(vocab)).to(device)
+    if args.classifier:
+        classifier_state=load_checkpoint(args.classifier,device)
+        classifier.load_state_dict(classifier_state.get("classifier",classifier_state.get("model")))
     ocr=WordOCR(len(vocab)).to(device)
     if args.ocr:
-        ocr_state=load_checkpoint(args.ocr,device); ocr.load_state_dict(ocr_state.get("ocr",ocr_state.get("model")))
-    disc=PatchDiscriminator().to(device); style=WriterStyleNetwork(len(writer_ids),int(cfg["model"].get("style_dim",128))).to(device)
-    print("Networks ready",flush=True)
-    opt_g=torch.optim.AdamW(gen.parameters(),lr=float(tc["learning_rate"])); opt_d=torch.optim.AdamW(list(disc.parameters())+list(style.parameters()),lr=float(tc["learning_rate"])); opt_ocr=torch.optim.AdamW(ocr.parameters(),lr=float(tc.get("ocr_learning_rate",tc["learning_rate"]))); scaler_g=make_scaler(device,tc.get("amp",True)); scaler_d=make_scaler(device,tc.get("amp",True)); scaler_ocr=make_scaler(device,tc.get("amp",True)); ctc=CTCLoss(blank=vocab.blank_id,zero_infinity=True)
-    step=0; accumulation=int(tc.get("accumulation_steps",1)); start_epoch=0; history=MetricHistory(args.output); log_every=max(1,int(tc.get("log_every",50)))
+        ocr_state=load_checkpoint(args.ocr,device)
+        ocr.load_state_dict(ocr_state.get("ocr",ocr_state.get("model")))
+    discriminator=PatchDiscriminator().to(device)
+    # This is the original WriteViT Writer path, shared with the generator and
+    # independent from generator.character_style_encoder.
+    writer=WriterStyleNetwork(
+        len(writer_ids),int(cfg["model"].get("style_dim",256)),
+        encoder=generator.writevit_writer_encoder,
+    ).to(device)
+
+    writer_parameter_ids={id(parameter) for parameter in generator.writevit_writer_encoder.parameters()}
+    generator_parameters=[parameter for parameter in generator.parameters() if id(parameter) not in writer_parameter_ids]
+    g_lr=float(train_cfg.get("generator_learning_rate",train_cfg["learning_rate"]))
+    d_lr=float(train_cfg.get("discriminator_learning_rate",train_cfg["learning_rate"]))
+    w_lr=float(train_cfg.get("writer_learning_rate",train_cfg["learning_rate"]))
+    ocr_lr=float(train_cfg.get("ocr_learning_rate",train_cfg["learning_rate"]))
+    classifier_lr=float(train_cfg.get("character_classifier_learning_rate",train_cfg["learning_rate"]))
+    adam_options={"betas":(0.0,0.999),"weight_decay":0.0,"eps":1e-8}
+    optimizer_g=torch.optim.Adam(generator_parameters,lr=g_lr,**adam_options)
+    optimizer_d=torch.optim.Adam(discriminator.parameters(),lr=d_lr,**adam_options)
+    optimizer_w=torch.optim.Adam(writer.parameters(),lr=w_lr,**adam_options)
+    optimizer_ocr=torch.optim.Adam(ocr.parameters(),lr=ocr_lr,**adam_options)
+    optimizer_classifier=torch.optim.Adam(classifier.parameters(),lr=classifier_lr,**adam_options)
+    scaler_g=make_scaler(device,train_cfg.get("amp",True)); scaler_d=make_scaler(device,train_cfg.get("amp",True))
+    scaler_w=make_scaler(device,train_cfg.get("amp",True)); scaler_ocr=make_scaler(device,train_cfg.get("amp",True))
+    scaler_classifier=make_scaler(device,train_cfg.get("amp",True))
+    ctc=CTCLoss(blank=vocab.blank_id,zero_infinity=True)
+
+    start_epoch=0; batch_step=0; generator_updates=0; history=MetricHistory(args.output)
     if args.resume:
-        state=load_checkpoint(args.resume,device); gen.load_state_dict(state["generator"]); disc.load_state_dict(state["discriminator"]); style.load_state_dict(state["style"]); ocr.load_state_dict(state["ocr"]); opt_g.load_state_dict(state["optimizer_g"]); opt_d.load_state_dict(state["optimizer_d"]); opt_ocr.load_state_dict(state["optimizer_ocr"]); scaler_g.load_state_dict(state.get("scaler_g",{})); scaler_d.load_state_dict(state.get("scaler_d",{})); scaler_ocr.load_state_dict(state.get("scaler_ocr",{})); step=int(state.get("step",0)); start_epoch=int(state.get("epoch",-1))+1
-    total_epochs=args.epochs or int(tc["epochs"])
-    print(
-        f"Starting IAM training: device={device}, samples={len(ds)}, "
-        f"batches/epoch={len(loader)}, batch_size={tc['batch_size']}, "
-        f"accumulation={accumulation}, epochs={start_epoch}..{total_epochs-1}, "
-        f"log_every={log_every}, output={args.output}",
-        flush=True,
-    )
-    for epoch in range(start_epoch, total_epochs):
-        adversarial=epoch>=args.warmup_epochs; totals={"generator":0.0,"discriminator":0.0,"ocr_real":0.0,"raw_character":0.0,"context_character":0.0,"ctc":0.0,"style":0.0,"adversarial":0.0}; seen=0; preview_batch=None
-        epoch_started=time.perf_counter(); epoch_batches=len(loader)
-        print(f"Epoch {epoch+1}/{total_epochs} started (GAN={'on' if adversarial else 'off'})",flush=True)
-        for batch_index,batch in enumerate(loader,1):
-            real,ids,refs=batch["image"].to(device),batch["ids"].to(device),batch["references"].to(device); lengths=batch["lengths"]; writer=torch.tensor([writer_to_id[x] for x in batch["writer_id"]],device=device)
-            targets=torch.cat([ids[i,:n] for i,n in enumerate(lengths.tolist())])
-            _grad(ocr,True); ocr.train()
-            with amp_context(device,tc.get("amp",True)):
-                real_logits=ocr(real); real_in_len=(lengths*2).clamp(max=real_logits.shape[1]); loss_ocr_real=ctc(real_logits.log_softmax(-1).transpose(0,1),targets,real_in_len,lengths)
-            optimizer_step(loss_ocr_real,opt_ocr,scaler_ocr,accumulation,step)
-            with torch.no_grad(): fake_detached=gen(ids,refs)["word"]
-            _grad(disc,True); _grad(style,True)
-            with amp_context(device,tc.get("amp",True)):
-                _,style_logits=style(real); loss_d=F.cross_entropy(style_logits,writer)
-                if adversarial: loss_d=loss_d+hinge_discriminator(disc(real),disc(fake_detached))
-            optimizer_step(loss_d,opt_d,scaler_d,accumulation,step)
-            _grad(disc,False); _grad(style,False); _grad(ocr,False); ocr.eval()
-            with amp_context(device,tc.get("amp",True)):
-                out=gen(ids,refs)
-                raw_char=glyph_classification_loss(classifier,out["raw_glyphs"],ids,vocab.pad_id); ctx_char=glyph_classification_loss(classifier,out["contextual_glyphs"],ids,vocab.pad_id)
-                logits=ocr(out["word"]); in_len=(lengths*2).clamp(max=logits.shape[1]); loss_ctc=ctc(logits.log_softmax(-1).transpose(0,1),targets,in_len,lengths)
-                fake_style,fake_writer=style(out["word"]); ref_style,_=style(refs[:,0]); style_loss=F.cross_entropy(fake_writer,writer)+F.cosine_embedding_loss(fake_style,ref_style,torch.ones(real.shape[0],device=device))
-                loss_g=float(lc["character_raw"])*raw_char+float(lc["character_context"])*ctx_char+float(lc["ctc"])*loss_ctc+float(lc["style"])*style_loss
-                loss_adv=hinge_generator(disc(out["word"])) if adversarial else out["word"].new_zeros(())
-                loss_g=loss_g+float(lc["adversarial"])*loss_adv
-            size=ids.shape[0]; seen+=size
-            values={"generator":loss_g,"discriminator":loss_d,"ocr_real":loss_ocr_real,"raw_character":raw_char,"context_character":ctx_char,"ctc":loss_ctc,"style":style_loss,"adversarial":loss_adv}
-            for key,value in values.items(): totals[key]+=float(value.detach())*size
-            preview_batch=batch
-            optimizer_step(loss_g,opt_g,scaler_g,accumulation,step); step+=1
-            if batch_index==1 or batch_index%log_every==0 or batch_index==epoch_batches or (args.max_steps and step>=args.max_steps):
-                elapsed=time.perf_counter()-epoch_started; seconds_per_batch=elapsed/batch_index; remaining=max(0,epoch_batches-batch_index)
-                if args.max_steps: remaining=min(remaining,max(0,args.max_steps-step))
-                print(
-                    f"epoch={epoch+1}/{total_epochs} batch={batch_index}/{epoch_batches} step={step} "
-                    f"g={float(loss_g.detach()):.4f} d={float(loss_d.detach()):.4f} "
-                    f"ocr_real={float(loss_ocr_real.detach()):.4f} "
-                    f"char_raw={float(raw_char.detach()):.4f} char_ctx={float(ctx_char.detach()):.4f} "
-                    f"ctc={float(loss_ctc.detach()):.4f} style={float(style_loss.detach()):.4f} "
-                    f"sec/batch={seconds_per_batch:.2f} eta_min={remaining*seconds_per_batch/60:.1f}",
-                    flush=True,
-                )
-            if args.max_steps and step>=args.max_steps: break
-        print(f"Saving checkpoint to {Path(args.output)/'latest.pt'}",flush=True)
-        save_checkpoint(Path(args.output)/"latest.pt",generator=gen.state_dict(),discriminator=disc.state_dict(),style=style.state_dict(),ocr=ocr.state_dict(),optimizer_g=opt_g.state_dict(),optimizer_d=opt_d.state_dict(),optimizer_ocr=opt_ocr.state_dict(),scaler_g=scaler_g.state_dict(),scaler_d=scaler_d.state_dict(),scaler_ocr=scaler_ocr.state_dict(),writer_to_id=writer_to_id,epoch=epoch,step=step,config=cfg)
-        metrics={"epoch":epoch,"step":step,**{key:value/max(1,seen) for key,value in totals.items()},"learning_rate":opt_g.param_groups[0]["lr"],"gan_enabled":int(adversarial)}; history.append(metrics); history.plot("iam_curves.png")
-        if preview_batch is not None and epoch%int(tc.get("preview_every",1))==0:
-            print(f"Writing preview for epoch {epoch+1}",flush=True)
-            gen.eval()
-            with torch.inference_mode(): preview_out=gen(preview_batch["ids"].to(device),preview_batch["references"].to(device),noise_seed=int(cfg.get("seed",42)))
-            save_generator_preview(preview_batch,preview_out,classifier,vocab.tokens,Path(args.output)/"preview"/f"epoch_{epoch:03d}",min(4,int(tc.get("preview_samples",16)))); gen.train()
-        print(f"Epoch {epoch+1} complete in {(time.perf_counter()-epoch_started)/60:.1f} min: {metrics}",flush=True)
-        if args.max_steps and step>=args.max_steps: break
+        state=load_checkpoint(args.resume,device)
+        generator.load_state_dict(state["generator"]); discriminator.load_state_dict(state["discriminator"])
+        writer.load_state_dict(state["writer"]); ocr.load_state_dict(state["ocr"])
+        classifier.load_state_dict(state["classifier"])
+        optimizer_g.load_state_dict(state["optimizer_g"]); optimizer_d.load_state_dict(state["optimizer_d"])
+        optimizer_w.load_state_dict(state["optimizer_w"]); optimizer_ocr.load_state_dict(state["optimizer_ocr"])
+        optimizer_classifier.load_state_dict(state["optimizer_classifier"])
+        scaler_g.load_state_dict(state.get("scaler_g",{})); scaler_d.load_state_dict(state.get("scaler_d",{}))
+        scaler_w.load_state_dict(state.get("scaler_w",{})); scaler_ocr.load_state_dict(state.get("scaler_ocr",{}))
+        scaler_classifier.load_state_dict(state.get("scaler_classifier",{}))
+        batch_step=int(state.get("batch_step",0)); generator_updates=int(state.get("generator_updates",0))
+        start_epoch=int(state.get("epoch",-1))+1
+
+    epochs=args.epochs or int(train_cfg["epochs"]); g_every=int(train_cfg.get("generator_every",2))
+    log_every=max(1,int(train_cfg.get("log_every",50)))
+    print(f"WriteViT parity training: samples={len(dataset)} writers={len(writer_ids)} batch={train_cfg['batch_size']} G:critic=1:{g_every}",flush=True)
+    for epoch in range(start_epoch,epochs):
+        totals={key:0.0 for key in ("generator","discriminator","ocr_real","writer_real","character_real","character_accuracy","character_style","ctc_fake","writer_fake","adversarial")}
+        counts={key:0 for key in totals}; started=time.perf_counter()
+        for batch_index,batch in enumerate(loader):
+            real=batch["image"].to(device); ids=batch["ids"].to(device); references=batch["references"].to(device)
+            lengths=batch["lengths"]; writer_labels=torch.tensor([writer_to_id[item] for item in batch["writer_id"]],device=device)
+
+            # Original D/OCR/Writer critic step: every batch.
+            _set_grad(discriminator,True); _set_grad(ocr,True); _set_grad(writer,True); _set_grad(classifier,True)
+            (character_images,character_labels),character_iterator=_next_character_batch(character_loader,character_iterator)
+            character_images=character_images.to(device,non_blocking=True); character_labels=character_labels.to(device,non_blocking=True)
+            with torch.no_grad(): fake_detached=generator(ids,references)["word"]
+            with amp_context(device,train_cfg.get("amp",True)):
+                real_logits=ocr(real); loss_ocr_real=_ctc_loss(ctc,real_logits,ids,lengths)
+                _,writer_logits=writer(real); loss_writer_real=F.cross_entropy(writer_logits,writer_labels)
+                character_logits=classifier(character_images); loss_character_real=F.cross_entropy(character_logits,character_labels)
+                loss_discriminator=2.0*hinge_discriminator(discriminator(real),discriminator(fake_detached))
+            _step(loss_ocr_real,optimizer_ocr,scaler_ocr)
+            _step(loss_writer_real,optimizer_w,scaler_w)
+            _step(loss_discriminator,optimizer_d,scaler_d)
+            _step(loss_character_real,optimizer_classifier,scaler_classifier)
+
+            character_accuracy=(character_logits.detach().argmax(-1)==character_labels).float().mean()
+            values={"discriminator":loss_discriminator,"ocr_real":loss_ocr_real,"writer_real":loss_writer_real,"character_real":loss_character_real,"character_accuracy":character_accuracy}
+            for key,value in values.items(): totals[key]+=float(value.detach()); counts[key]+=1
+
+            # Original generator schedule: every second batch by default.
+            if batch_index % g_every == 0:
+                _set_grad(discriminator,False); _set_grad(ocr,False); _set_grad(writer,False); _set_grad(classifier,False)
+                with amp_context(device,train_cfg.get("amp",True)):
+                    output=generator(ids,references); generated=output["word"]
+                    adversarial=hinge_generator(discriminator(generated))
+                    ctc_fake=_ctc_loss(ctc,ocr(generated),ids,lengths)
+                    _,fake_writer_logits=writer(generated); writer_fake=F.cross_entropy(fake_writer_logits,writer_labels)
+                    character_style=glyph_classification_loss(classifier,output["styled_glyphs"],ids,vocab.pad_id)
+                    ocr_weight=_gradient_balance(adversarial,ctc_fake,generated)
+                    writer_weight=_gradient_balance(adversarial,writer_fake,generated)
+                    generator_loss=(
+                        2.0*adversarial+ocr_weight*ctc_fake+writer_weight*writer_fake
+                        +float(loss_cfg.get("character_style",1.0))*character_style
+                    )
+                _step(generator_loss,optimizer_g,scaler_g); generator_updates+=1
+                values={"generator":generator_loss,"character_style":character_style,"ctc_fake":ctc_fake,"writer_fake":writer_fake,"adversarial":adversarial}
+                for key,value in values.items(): totals[key]+=float(value.detach()); counts[key]+=1
+
+            batch_step+=1
+            if batch_index==0 or (batch_index+1)%log_every==0:
+                print(f"epoch={epoch+1}/{epochs} batch={batch_index+1}/{len(loader)} D={float(loss_discriminator):.4f} OCR={float(loss_ocr_real):.4f} W={float(loss_writer_real):.4f} C={float(loss_character_real):.4f} C_acc={float(character_accuracy):.3f} G_updates={generator_updates}",flush=True)
+            if args.max_steps and batch_step>=args.max_steps: break
+
+        metrics={"epoch":epoch,"batch_step":batch_step,"generator_updates":generator_updates}
+        metrics.update({key:totals[key]/max(1,counts[key]) for key in totals})
+        history.append(metrics); history.plot("iam_curves.png")
+        save_checkpoint(
+            Path(args.output)/"latest.pt",generator=generator.state_dict(),discriminator=discriminator.state_dict(),
+            writer=writer.state_dict(),ocr=ocr.state_dict(),classifier=classifier.state_dict(),optimizer_g=optimizer_g.state_dict(),
+            optimizer_d=optimizer_d.state_dict(),optimizer_w=optimizer_w.state_dict(),optimizer_ocr=optimizer_ocr.state_dict(),
+            optimizer_classifier=optimizer_classifier.state_dict(),scaler_g=scaler_g.state_dict(),scaler_d=scaler_d.state_dict(),scaler_w=scaler_w.state_dict(),scaler_ocr=scaler_ocr.state_dict(),scaler_classifier=scaler_classifier.state_dict(),
+            writer_to_id=writer_to_id,epoch=epoch,batch_step=batch_step,generator_updates=generator_updates,config=cfg,
+        )
+        if epoch%int(train_cfg.get("preview_every",1))==0:
+            generator.eval()
+            with torch.inference_mode(): preview=generator(fixed_preview_batch["ids"].to(device),fixed_preview_batch["references"].to(device),noise_seed=int(cfg.get("seed",42)))
+            save_generator_preview(fixed_preview_batch,preview,classifier,vocab.tokens,Path(args.output)/"preview"/f"epoch_{epoch:03d}",int(train_cfg.get("preview_samples",10)))
+            generator.train()
+        print(f"Epoch {epoch+1} complete in {(time.perf_counter()-started)/60:.1f} min: {metrics}",flush=True)
+        if args.max_steps and batch_step>=args.max_steps: break
 
 
-if __name__ == "__main__": main()
-
+if __name__ == "__main__":
+    main()

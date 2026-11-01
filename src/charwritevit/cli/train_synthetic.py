@@ -21,20 +21,20 @@ def main():
     ds=SyntheticWordDataset(discover_fonts(cfg["data"]["fonts_dir"],bool(cfg["data"].get("require_font_license",True))),vocab); loader=DataLoader(ds,batch_size=int(tc["batch_size"]),shuffle=True,num_workers=int(tc.get("num_workers",2)),collate_fn=lambda b:collate_synthetic(b,vocab.pad_id))
     model=build_generator(cfg,vocab).to(device); classifier=CharacterClassifier(len(vocab)).to(device)
     classifier.load_state_dict(load_checkpoint(args.classifier,device)["model"]); classifier.eval(); classifier.requires_grad_(False)
-    opt=torch.optim.AdamW(model.parameters(),lr=float(tc["learning_rate"])); scaler=make_scaler(device,tc.get("amp",True)); step=0; start_epoch=0; history=MetricHistory(args.output); lc=cfg.get("loss",{})
+    opt=torch.optim.Adam(model.parameters(),lr=float(tc["learning_rate"]),betas=(0.0,0.999),weight_decay=0.0,eps=1e-8); scaler=make_scaler(device,tc.get("amp",True)); step=0; start_epoch=0; history=MetricHistory(args.output); lc=cfg.get("loss",{})
     if args.resume:
         state=load_checkpoint(args.resume,device); model.load_state_dict(state["model"]); opt.load_state_dict(state["optimizer"]); scaler.load_state_dict(state.get("scaler",{})); step=int(state.get("step",0)); start_epoch=int(state.get("epoch",-1))+1
     for epoch in range(start_epoch, args.epochs or int(tc["epochs"])):
-        totals={"loss":0.0,"reconstruction":0.0,"edge":0.0,"glyph_pixel":0.0,"raw_character":0.0,"context_character":0.0}; seen=0; preview_batch=None
+        totals={"loss":0.0,"reconstruction":0.0,"edge":0.0,"glyph_pixel":0.0,"character_style":0.0}; seen=0; preview_batch=None
         for batch in loader:
             ids,refs,target,glyph_target=[batch[x].to(device) for x in ("ids","references","word","glyphs")]
             with amp_context(device,tc.get("amp",True)):
                 out=model(ids,refs); pixel,edge=reconstruction_loss(out["word"],target)
-                raw_pixel=F.l1_loss(out["raw_glyphs"],glyph_target); char=glyph_classification_loss(classifier,out["raw_glyphs"],ids,vocab.pad_id)
-                char_ctx=glyph_classification_loss(classifier,out["contextual_glyphs"],ids,vocab.pad_id)
-                loss=float(lc.get("reconstruction",10))*pixel+float(lc.get("edge",0))*edge+5*raw_pixel+float(lc.get("character_raw",1))*char+float(lc.get("character_context",.25))*char_ctx
+                raw_pixel=F.l1_loss(out["styled_glyphs"],glyph_target)
+                char_style=glyph_classification_loss(classifier,out["styled_glyphs"],ids,vocab.pad_id)
+                loss=float(lc.get("reconstruction",10))*pixel+float(lc.get("edge",0))*edge+5*raw_pixel+float(lc.get("character_style",1))*char_style
             size=ids.shape[0]; seen+=size
-            for key,value in {"loss":loss,"reconstruction":pixel,"edge":edge,"glyph_pixel":raw_pixel,"raw_character":char,"context_character":char_ctx}.items(): totals[key]+=float(value.detach())*size
+            for key,value in {"loss":loss,"reconstruction":pixel,"edge":edge,"glyph_pixel":raw_pixel,"character_style":char_style}.items(): totals[key]+=float(value.detach())*size
             preview_batch=batch
             optimizer_step(loss,opt,scaler,int(tc.get("accumulation_steps",1)),step); step+=1
             if args.max_steps and step>=args.max_steps: break
@@ -43,7 +43,7 @@ def main():
         if preview_batch is not None and epoch%int(tc.get("preview_every",1))==0:
             model.eval()
             with torch.inference_mode(): preview_out=model(preview_batch["ids"].to(device),preview_batch["references"].to(device),noise_seed=int(cfg.get("seed",42)))
-            save_generator_preview(preview_batch,preview_out,classifier,vocab.tokens,Path(args.output)/"preview"/f"epoch_{epoch:03d}",min(4,int(tc.get("preview_samples",16)))); model.train()
+            save_generator_preview(preview_batch,preview_out,classifier,vocab.tokens,Path(args.output)/"preview"/f"epoch_{epoch:03d}",int(tc.get("preview_samples",10))); model.train()
         print(metrics)
         if args.max_steps and step>=args.max_steps: break
 

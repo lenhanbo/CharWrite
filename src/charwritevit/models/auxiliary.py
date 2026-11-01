@@ -4,7 +4,7 @@ import torch
 from torch import nn
 from torch.nn.utils import spectral_norm
 
-from .common import ConvBlock, PosCNN, StyleEncoder, TransformerBlock
+from .common import ConvBlock, GlobalLayerNorm, PosCNN, StyleEncoder, TransformerBlock
 from .resnet18 import ResNet18
 
 
@@ -23,47 +23,68 @@ class WordOCR(nn.Module):
 
     def __init__(self, classes: int, width=256, depth=3, heads=8):
         super().__init__()
+        self.input_norm = GlobalLayerNorm()
         self.features = ResNet18(width)
-        self.blocks = nn.ModuleList([TransformerBlock(width, heads) for _ in range(depth)])
+        self.blocks = nn.ModuleList([
+            TransformerBlock(width, heads, qkv_bias=True, spectral=True)
+            for _ in range(depth)
+        ])
         self.cpe = PosCNN(width); self.norm = nn.LayerNorm(width)
         self.head = nn.Linear(width, classes)
+        self.output_norm = GlobalLayerNorm()
 
     def forward(self, image: torch.Tensor) -> torch.Tensor:
-        feature = self.features(image); batch, channels, height, width = feature.shape
+        feature = self.features(self.input_norm(image)); batch, channels, height, width = feature.shape
         tokens = feature.flatten(2).transpose(1, 2)
         for index, block in enumerate(self.blocks):
             tokens = block(tokens)
             if index == 0: tokens = self.cpe(tokens, height, width)
-        return self.head(self.norm(tokens))
+        return self.output_norm(self.head(self.norm(tokens)))
 
 
 class SNResidualDownBlock(nn.Module):
-    def __init__(self, in_channels: int, out_channels: int):
+    """BigGAN DBlock used by the released WriteViT discriminator."""
+
+    def __init__(self, in_channels: int, out_channels: int, preactivation=False, downsample=True):
         super().__init__()
-        self.conv1=spectral_norm(nn.Conv2d(in_channels,out_channels,3,1,1)); self.conv2=spectral_norm(nn.Conv2d(out_channels,out_channels,3,1,1)); self.skip=spectral_norm(nn.Conv2d(in_channels,out_channels,1))
+        self.activation=nn.ReLU(inplace=False); self.preactivation=preactivation; self.downsample=downsample
+        self.conv1=spectral_norm(nn.Conv2d(in_channels,out_channels,3,1,1)); self.conv2=spectral_norm(nn.Conv2d(out_channels,out_channels,3,1,1))
+        self.learnable_skip=in_channels!=out_channels or downsample
+        self.skip=spectral_norm(nn.Conv2d(in_channels,out_channels,1)) if self.learnable_skip else nn.Identity()
 
     def forward(self, image: torch.Tensor) -> torch.Tensor:
-        residual=nn.functional.avg_pool2d(self.skip(image),2)
-        feature=nn.functional.leaky_relu(image,.2); feature=self.conv1(feature); feature=nn.functional.leaky_relu(feature,.2); feature=self.conv2(feature); feature=nn.functional.avg_pool2d(feature,2)
+        feature=self.activation(image) if self.preactivation else image
+        feature=self.activation(self.conv1(feature)); feature=self.conv2(feature)
+        if self.downsample: feature=nn.functional.avg_pool2d(feature,2)
+        residual=image
+        if self.preactivation and self.learnable_skip: residual=self.skip(residual)
+        if self.downsample: residual=nn.functional.avg_pool2d(residual,2)
+        if not self.preactivation and self.learnable_skip: residual=self.skip(residual)
         return feature+residual
 
 
 class PatchDiscriminator(nn.Module):
-    """BigGAN-style spectral residual discriminator for variable-width words."""
+    """WriteViT's resolution-16 BigGAN discriminator for variable-width words."""
 
-    def __init__(self, base=32):
+    def __init__(self, base=64):
         super().__init__()
-        self.net = nn.Sequential(SNResidualDownBlock(1,base),SNResidualDownBlock(base,base*2),SNResidualDownBlock(base*2,base*4))
-        self.output=spectral_norm(nn.Conv2d(base*4,1,3,1,1))
+        self.blocks=nn.Sequential(
+            SNResidualDownBlock(1,base,False,True),
+            SNResidualDownBlock(base,base*4,True,True),
+            SNResidualDownBlock(base*4,base*8,True,True),
+            SNResidualDownBlock(base*8,base*8,True,False),
+        )
+        self.activation=nn.ReLU(inplace=False); self.output=spectral_norm(nn.Linear(base*8,1))
 
     def forward(self, image: torch.Tensor) -> torch.Tensor:
-        return self.output(nn.functional.leaky_relu(self.net(image),.2))
+        feature=self.blocks(image); pooled=self.activation(feature).sum(dim=(2,3))
+        return self.output(pooled)
 
 
 class WriterStyleNetwork(nn.Module):
-    def __init__(self, writers: int, style_dim=128):
+    def __init__(self, writers: int, style_dim=128, encoder: StyleEncoder | None = None):
         super().__init__()
-        self.encoder = StyleEncoder(style_dim)
+        self.encoder = encoder if encoder is not None else StyleEncoder(style_dim)
         self.head = nn.Linear(style_dim, writers)
 
     def forward(self, images: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
