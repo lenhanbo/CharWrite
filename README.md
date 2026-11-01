@@ -50,11 +50,11 @@ the mapping from a companion `writer_folder/form_id.png` tree (including a ZIP),
 such as the output of the Kaggle forms-dataset creator. As an explicit temporary
 fallback, `iam_folder_as_writer: true` treats each word folder as a pseudo-writer;
 those splits are not true writer-disjoint splits. The joint character critic
-learns from EMNIST ByClass while IAM training runs. Optional punctuation
-samples can be rendered from `.ttf`/`.otf` handwriting fonts. Every font must have a nearby
-`OFL.txt`, `LICENSE.txt`, `LICENSE`, or `UFL.txt` file.
-When fonts are available, the classifier trains both sources together using a
-configurable 75% EMNIST / 25% synthetic-punctuation epoch mix.
+does not need IAM character boxes: every decoded cell is aligned one-to-one with
+its query token. On critic steps it learns from fixed GNU glyphs plus detached
+styled glyphs; on generator steps it is frozen and sends styled-character CE
+back through the decoder/refiner. EMNIST/font training remains an optional
+standalone initialization ablation only.
 
 The bundled `assets/unifont.pickle` is the GNU Unifont table from WriteViT. Its
 frozen 16x16 raster embeddings form the content-token row in the initial
@@ -70,7 +70,7 @@ pip install -e .
 
 ## Joint training on Kaggle
 
-Attach a handwriting-font dataset with this structure:
+Optional classifier-pretraining ablations can attach a handwriting-font dataset:
 
 ```text
 handwriting-fonts/
@@ -79,22 +79,12 @@ handwriting-fonts/
     `-- OFL.txt
 ```
 
-Check these paths in `configs/kaggle.yaml`:
+For standard joint training, check the IAM paths in `configs/kaggle.yaml`:
 
 ```yaml
 data:
-  emnist_root: /kaggle/input/emnist
-  emnist_cache: /kaggle/working/charwritevit-data/emnist-index
-  fonts_dir: /kaggle/input/handwriting-fonts
-  char_prepared_dir: /kaggle/working/charwritevit-data/characters
+  iam_root: /kaggle/input/iam-dataset/iam_dataset
   prepared_dir: /kaggle/working/charwritevit-data/iam
-```
-
-Validate EMNIST and discover licensed fonts:
-
-```bash
-python -m charwritevit.cli.prepare_char_data \
-  --config configs/kaggle.yaml
 ```
 
 Prepare IAM:
@@ -121,8 +111,8 @@ python -m charwritevit.cli.train_iam \
   --output outputs/iam
 ```
 
-The character classifier is trained on real EMNIST/font glyphs every critic
-batch. During generator updates it is frozen, while its styled-glyph CE still
+The character classifier is trained on query-labelled GNU and detached styled
+glyph cells every critic batch. During generator updates it is frozen, while its styled-glyph CE still
 backpropagates through the character decoder and refiner. This mirrors the
 real/fake training roles of WriteViT's OCR and Writer ID critics. Resume all
 networks together with:
@@ -140,8 +130,8 @@ D/OCR/Writer/Character are updated every batch and G every second batch. There
 is no GAN warmup or mandatory pretrained auxiliary checkpoint.
 
 Full IAM training has no paired pixel or edge reconstruction loss. Real IAM
-images train the recognizer, writer network, and discriminator; real EMNIST/font
-glyphs train the character classifier; generated words/glyphs are supervised by
+images train the recognizer, writer network, and discriminator; GNU/styled cells
+train the character classifier; generated words/glyphs are supervised by
 character CE, OCR/CTC, writer identity, and GAN losses.
 
 ## Evaluation (including FID/KID)

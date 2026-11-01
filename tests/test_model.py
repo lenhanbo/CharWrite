@@ -108,6 +108,18 @@ def test_frozen_classifier_still_sends_gradient_to_glyphs():
     assert all(p.grad is None for p in classifier.parameters())
 
 
+def test_joint_classifier_step_uses_detached_query_aligned_cells():
+    model=tiny_model()
+    classifier=CharacterClassifier(12,width=8)
+    ids=torch.tensor([[3,4]])
+    output=model(ids,torch.randn(1,1,1,32,48))
+    cells=torch.cat([output["gnu_glyphs"].detach().flatten(0,1),output["styled_glyphs"].detach().flatten(0,1)])
+    labels=ids.flatten().repeat(2)
+    torch.nn.functional.cross_entropy(classifier(cells),labels).backward()
+    assert classifier.head.weight.grad is not None
+    assert all(parameter.grad is None for parameter in model.parameters())
+
+
 def test_real_unifont_table_is_frozen_but_projection_trains():
     table=torch.randint(0,2,(12,256),dtype=torch.float32)
     model=CharWriteViTGenerator(12,style_dim=32,hidden_dim=32,character_style_layers=1,

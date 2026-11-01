@@ -16,8 +16,8 @@ convolutional decoder.
    writer-folder/form-image dataset and construct writer-disjoint manifests.
    If all metadata sources are absent, the temporary Kaggle preset treats each
    word-image folder as a pseudo-writer; those splits are only folder-disjoint.
-   All EMNIST, synthetic-font, and IAM images are polarity-normalized to black
-   ink on white background before resizing and scaling to `[-1, 1]`.
+   All IAM and optional standalone-ablation images are polarity-normalized to
+   black ink on white before resizing and scaling to `[-1, 1]`.
 2. Encode every character with the frozen 16x16 GNU Unifont table and its
    trainable linear projection, matching WriteViT's query embedding.
 3. Use a dedicated character-style Writer Encoder. Add sinusoidal positional
@@ -39,9 +39,9 @@ post-generator correction in this baseline.
 
 ## Auxiliary networks and losses
 
-- Character classifier: trained jointly on real EMNIST ByClass plus licensed
-  synthetic-font glyphs; frozen only during generator updates, where its CE
-  gradient passes through styled glyphs into the character refiner.
+- Character classifier: trained jointly on fixed GNU cells and detached styled
+  cells using query-token labels; frozen only during generator updates, where
+  its CE gradient passes through styled glyphs into the character refiner.
 - Recognizer: WriteViT-style ResNet18 patch encoder + ViT blocks + CTC head;
   trained jointly on real IAM words and frozen only during generator updates.
 - Discriminator: spectral-normalized residual/BigGAN-style discriminator.
@@ -52,10 +52,11 @@ post-generator correction in this baseline.
 
 ## Training stages
 
-1. Prepare EMNIST/font character supervision and writer-disjoint IAM words.
-2. Jointly train D, OCR, Writer ID, and Character Classifier on real samples
-   every batch. Train G every second batch with all four critics frozen while
-   their gradients still flow to generated words/glyphs. GNU Unifont is
+1. Prepare writer-disjoint IAM words; no character bounding boxes are needed.
+2. Jointly train D, OCR, and Writer ID on IAM real samples; train the Character
+   Classifier on query-labelled GNU plus detached styled cells every batch.
+   Train G every second batch with all four critics frozen while their gradients
+   still flow to generated words/glyphs. GNU Unifont is
    only the frozen content prior, exactly as in WriteViT; glyph bitmaps are not
    concatenated into the word target or passed as a coarse word image.
 3. The styled-character branch receives classifier supervision and replaces
@@ -81,6 +82,5 @@ when enough samples exist, and style retrieval.
 - Tests cover feature-grid ordering, scale shapes, CPE, toRGB summation, frozen
   Unifont, gradient flow, independent style encoders, seeded noise, splits,
   checkpoint resume, and CPU/Kaggle smoke runs.
-- IAM and EMNIST remain external. Licensed fonts are optional and only augment
-  punctuation supervision for the classifier; GNU Unifont remains the bundled
-  frozen content prior.
+- IAM remains external. EMNIST/fonts are optional standalone classifier
+  ablations only; GNU Unifont remains the bundled frozen content prior.

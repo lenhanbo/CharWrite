@@ -1,20 +1,16 @@
 from __future__ import annotations
 
 from pathlib import Path
-import string
 import time
-import warnings
 
 import torch
 import torch.nn.functional as F
 from torch.nn import CTCLoss
-from torch.utils.data import ConcatDataset, DataLoader
+from torch.utils.data import DataLoader
 
 from charwritevit.cli.common import build_generator, load_vocab, training_parser
 from charwritevit.config import load_config
 from charwritevit.data.iam import IAMWordDataset, collate_iam
-from charwritevit.data.emnist import build_emnist_dataset
-from charwritevit.data.synthetic import SyntheticCharacterDataset, discover_fonts
 from charwritevit.losses import glyph_classification_loss, hinge_discriminator, hinge_generator
 from charwritevit.models.auxiliary import CharacterClassifier, PatchDiscriminator, WordOCR, WriterStyleNetwork
 from charwritevit.train.preview import MetricHistory, save_generator_preview
@@ -44,36 +40,6 @@ def _gradient_balance(adversarial, auxiliary, generated, coefficient=0.7):
     return coefficient*adversarial_gradient.std().detach()/(1e-7+auxiliary_gradient.std().detach())
 
 
-def _build_character_loader(data_cfg, train_cfg, vocab):
-    fonts=discover_fonts(
-        data_cfg["fonts_dir"],bool(data_cfg.get("require_font_license",True)),
-        allow_empty=bool(data_cfg.get("classifier_fonts_optional",True)),
-    )
-    if not fonts:
-        warnings.warn("Joint character critic is using EMNIST only; punctuation needs licensed fonts")
-    cache=Path(data_cfg.get("emnist_cache",Path(data_cfg.get("char_prepared_dir","data/characters")).parent/"emnist-index"))
-    emnist=build_emnist_dataset(
-        data_cfg["emnist_root"],vocab,train=True,
-        download=bool(data_cfg.get("auto_download_emnist",True)),cache_dir=cache,
-    )
-    datasets=[emnist]
-    punctuation=[char for char in vocab.tokens[3:] if char not in string.ascii_letters+string.digits]
-    fraction=float(train_cfg.get("classifier_synthetic_fraction",0.25))
-    if fonts and punctuation and fraction>0:
-        synthetic_samples=round(len(emnist)*fraction/(1.0-fraction))
-        datasets.append(SyntheticCharacterDataset(fonts,vocab,synthetic_samples,characters=punctuation))
-    return DataLoader(
-        ConcatDataset(datasets),batch_size=int(train_cfg.get("classifier_batch_size",256)),
-        shuffle=True,num_workers=int(train_cfg.get("num_workers",0)),pin_memory=True,drop_last=True,
-    )
-
-
-def _next_character_batch(loader, iterator):
-    try: return next(iterator),iterator
-    except StopIteration:
-        iterator=iter(loader); return next(iterator),iterator
-
-
 def main():
     parser=training_parser("Train the character-refined WriteViT baseline on IAM")
     parser.add_argument("--classifier",help="Optional classifier initialization; joint training does not require it")
@@ -98,8 +64,6 @@ def main():
         num_workers=int(train_cfg.get("num_workers",0)),
         collate_fn=lambda batch:collate_iam(batch,vocab.pad_id),drop_last=True,
     )
-    character_loader=_build_character_loader(data_cfg,train_cfg,vocab)
-    character_iterator=iter(character_loader)
     preview_manifest=Path(data_cfg["prepared_dir"])/"val.json"
     preview_dataset=IAMWordDataset(
         preview_manifest if preview_manifest.is_file() else Path(data_cfg["prepared_dir"])/"train.json",
@@ -174,7 +138,7 @@ def main():
     log_every=max(1,int(train_cfg.get("log_every",50)))
     print(f"WriteViT parity training: samples={len(dataset)} writers={len(writer_ids)} batch={train_cfg['batch_size']} G:critic=1:{g_every}",flush=True)
     for epoch in range(start_epoch,epochs):
-        totals={key:0.0 for key in ("generator","discriminator","ocr_real","writer_real","character_real","character_accuracy","character_style","ctc_fake","writer_fake","adversarial")}
+        totals={key:0.0 for key in ("generator","discriminator","ocr_real","writer_real","character_classifier","character_accuracy","character_style","ctc_fake","writer_fake","adversarial")}
         counts={key:0 for key in totals}; started=time.perf_counter()
         for batch_index,batch in enumerate(loader):
             real=batch["image"].to(device); ids=batch["ids"].to(device); references=batch["references"].to(device)
@@ -182,21 +146,23 @@ def main():
 
             # Original D/OCR/Writer critic step: every batch.
             _set_grad(discriminator,True); _set_grad(ocr,True); _set_grad(writer,True); _set_grad(classifier,True)
-            (character_images,character_labels),character_iterator=_next_character_batch(character_loader,character_iterator)
-            character_images=character_images.to(device,non_blocking=True); character_labels=character_labels.to(device,non_blocking=True)
-            with torch.no_grad(): fake_detached=generator(ids,references)["word"]
+            with torch.no_grad(): detached_output=generator(ids,references)
+            fake_detached=detached_output["word"]
             with amp_context(device,train_cfg.get("amp",True)):
                 real_logits=ocr(real); loss_ocr_real=_ctc_loss(ctc,real_logits,ids,lengths)
                 _,writer_logits=writer(real); loss_writer_real=F.cross_entropy(writer_logits,writer_labels)
-                character_logits=classifier(character_images); loss_character_real=F.cross_entropy(character_logits,character_labels)
+                character_mask=ids.ne(vocab.pad_id); character_labels=ids[character_mask]
+                gnu_logits=classifier(detached_output["gnu_glyphs"][character_mask])
+                styled_logits=classifier(detached_output["styled_glyphs"][character_mask])
+                loss_character_real=0.5*(F.cross_entropy(gnu_logits,character_labels)+F.cross_entropy(styled_logits,character_labels))
                 loss_discriminator=2.0*hinge_discriminator(discriminator(real),discriminator(fake_detached))
             _step(loss_ocr_real,optimizer_ocr,scaler_ocr)
             _step(loss_writer_real,optimizer_w,scaler_w)
             _step(loss_discriminator,optimizer_d,scaler_d)
             _step(loss_character_real,optimizer_classifier,scaler_classifier)
 
-            character_accuracy=(character_logits.detach().argmax(-1)==character_labels).float().mean()
-            values={"discriminator":loss_discriminator,"ocr_real":loss_ocr_real,"writer_real":loss_writer_real,"character_real":loss_character_real,"character_accuracy":character_accuracy}
+            character_accuracy=(styled_logits.detach().argmax(-1)==character_labels).float().mean()
+            values={"discriminator":loss_discriminator,"ocr_real":loss_ocr_real,"writer_real":loss_writer_real,"character_classifier":loss_character_real,"character_accuracy":character_accuracy}
             for key,value in values.items(): totals[key]+=float(value.detach()); counts[key]+=1
 
             # Original generator schedule: every second batch by default.
