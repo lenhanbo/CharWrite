@@ -32,7 +32,10 @@ model:
   feature_noise_std: 1.0
   dropout: 0.0
 train:
-  batch_size: 16
+  # The added character path plus joint D/OCR/Writer/Classifier training does
+  # not fit batch 16 on Kaggle's 16 GB T4/P100. Batch 8 keeps the same update
+  # schedule and optimizer configuration as WriteViT.
+  batch_size: 8
   accumulation_steps: 1
   epochs: 200
   classifier_epochs: 30

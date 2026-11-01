@@ -1,9 +1,8 @@
-# Optional character-classifier pretraining ablation on Kaggle
+# Character-classifier pretraining on Kaggle
 
-This stage is optional. Standard `train_iam` trains the character classifier
-jointly from scratch, analogous to WriteViT's OCR and Writer ID critics. Use
-this document only when testing a pretrained-classifier ablation or producing
-an initialization checkpoint.
+This stage is required before `train_iam`. IAM training loads this checkpoint,
+freezes the classifier, and sends styled-character CE only into the character
+decoder/refiner.
 
 This stage does **not** read IAM. Attach `crawford/emnist`. A licensed
 handwriting-font dataset is optional: without it the classifier trains on the

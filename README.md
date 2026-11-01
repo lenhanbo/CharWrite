@@ -48,13 +48,11 @@ its `a01-000u`-style word folders are treated as pseudo-writers.
 The IAM preparer prefers `forms.txt` or XML writer metadata. It can also recover
 the mapping from a companion `writer_folder/form_id.png` tree (including a ZIP),
 such as the output of the Kaggle forms-dataset creator. As an explicit temporary
-fallback, `iam_folder_as_writer: true` treats each word folder as a pseudo-writer;
-those splits are not true writer-disjoint splits. The joint character critic
-does not need IAM character boxes: every decoded cell is aligned one-to-one with
-its query token. On critic steps it learns from fixed GNU glyphs plus detached
-styled glyphs; on generator steps it is frozen and sends styled-character CE
-back through the decoder/refiner. EMNIST/font training remains an optional
-standalone initialization ablation only.
+  fallback, `iam_folder_as_writer: true` treats each word folder as a pseudo-writer;
+  those splits are not true writer-disjoint splits. The character path does not
+  need IAM character boxes: every decoded cell is aligned one-to-one with its
+  query token. A separately pretrained classifier stays frozen during IAM
+  training and sends styled-character CE back through the decoder/refiner.
 
 The bundled `assets/unifont.pickle` is the GNU Unifont table from WriteViT. Its
 frozen 16x16 raster embeddings form the content-token row in the initial
@@ -70,7 +68,8 @@ pip install -e .
 
 ## Joint training on Kaggle
 
-Optional classifier-pretraining ablations can attach a handwriting-font dataset:
+Pretrain the required character classifier with EMNIST and, for punctuation,
+an optional licensed handwriting-font dataset:
 
 ```text
 handwriting-fonts/
@@ -93,12 +92,16 @@ Prepare IAM:
 python -m charwritevit.cli.prepare_iam --config configs/kaggle.yaml
 ```
 
+Pretrain the classifier as described in `docs/KAGGLE_CLASSIFIER.md`; the
+following commands assume `outputs/classifier/best.pt` exists.
+
 Run a short joint smoke test:
 
 ```bash
 python -m charwritevit.cli.train_iam \
   --config configs/kaggle.yaml \
   --output outputs/iam-smoke \
+  --classifier outputs/classifier/best.pt \
   --epochs 1 \
   --max-steps 2
 ```
@@ -108,31 +111,31 @@ Then run the complete joint stage:
 ```bash
 python -m charwritevit.cli.train_iam \
   --config configs/kaggle.yaml \
-  --output outputs/iam
+  --output outputs/iam \
+  --classifier outputs/classifier/best.pt
 ```
 
-The character classifier is trained on query-labelled GNU and detached styled
-glyph cells every critic batch. During generator updates it is frozen, while its styled-glyph CE still
-backpropagates through the character decoder and refiner. This mirrors the
-real/fake training roles of WriteViT's OCR and Writer ID critics. Resume all
-networks together with:
+The pretrained character classifier remains frozen throughout IAM training;
+its styled-glyph CE backpropagates only through the character decoder and
+refiner. Resume the trainable IAM networks with:
 
 ```bash
 python -m charwritevit.cli.train_iam \
   --config configs/kaggle.yaml \
   --output outputs/iam \
+  --classifier outputs/classifier/best.pt \
   --resume outputs/iam/latest.pt
 ```
 
 The OCR recognizer follows WriteViT's joint-critic schedule. Adam uses
 `betas=(0, 0.999)`, no weight decay, and learning rate `5e-5`;
-D/OCR/Writer/Character are updated every batch and G every second batch. There
-is no GAN warmup or mandatory pretrained auxiliary checkpoint.
+D/OCR/Writer are updated every batch and G every second batch. The character
+classifier is pretrained and frozen; there is no GAN warmup.
 
 Full IAM training has no paired pixel or edge reconstruction loss. Real IAM
-images train the recognizer, writer network, and discriminator; GNU/styled cells
-train the character classifier; generated words/glyphs are supervised by
-character CE, OCR/CTC, writer identity, and GAN losses.
+images train the recognizer, writer network, and discriminator; generated
+words/glyphs are supervised by the frozen classifier's character CE, OCR/CTC,
+writer identity, and GAN losses.
 
 ## Evaluation (including FID/KID)
 
