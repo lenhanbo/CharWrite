@@ -56,7 +56,7 @@ that every font family directory includes its license.
 ```bash
 python -m charwritevit.cli.train_classifier \
   --config configs/kaggle.yaml \
-  --output outputs/classifier-v2-smoke \
+  --output outputs/classifier-smoke \
   --epochs 1 \
   --max-steps 20
 ```
@@ -81,7 +81,7 @@ plotting, and previews.
 ```bash
 python -m charwritevit.cli.train_classifier \
   --config configs/kaggle.yaml \
-  --output outputs/classifier-v2
+  --output outputs/classifier
 ```
 
 The default classifier settings are independent from the larger generator:
@@ -111,17 +111,17 @@ prediction, and confidence.
 ```bash
 python -m charwritevit.cli.train_classifier \
   --config configs/kaggle.yaml \
-  --output outputs/classifier-v2 \
-  --resume outputs/classifier-v2/latest.pt
+  --output outputs/classifier \
+  --resume outputs/classifier/latest.pt
 ```
 
 Before closing Kaggle, use **Save Version** or archive the output:
 
 ```bash
-tar -czf /kaggle/working/charwritevit-classifier-v2.tgz outputs/classifier-v2
+tar -czf /kaggle/working/charwritevit-classifier.tgz outputs/classifier
 ```
 
-Use `outputs/classifier-v2/best.pt` as the frozen character evaluator during the
+Use `outputs/classifier/best.pt` as the frozen character evaluator during the
 IAM character-ablation experiment.
 
 Stop the notebook here. Do not run `prepare_iam`, `train_synthetic`,

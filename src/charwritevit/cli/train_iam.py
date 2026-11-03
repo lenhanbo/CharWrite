@@ -94,7 +94,7 @@ def main():
     if int(classifier_state.get("classifier_data_version",0)) != 2:
         raise ValueError(
             "Character checkpoint predates uncropped EMNIST + GNU anchoring; "
-            "train a fresh classifier-v2 checkpoint before IAM training"
+            "train a fresh classifier checkpoint before IAM training"
         )
     classifier.load_state_dict(classifier_state.get("classifier",classifier_state.get("model")))
     classifier.eval(); _set_grad(classifier,False)

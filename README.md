@@ -95,7 +95,7 @@ python -m charwritevit.cli.prepare_iam --config configs/kaggle.yaml
 Pretrain the classifier as described in `docs/KAGGLE_CLASSIFIER.md`. Character
 images are contained and white-padded rather than cropped, and repeated GNU
 glyphs anchor the exact inputs used by the refiner. The following commands
-assume `outputs/classifier-v2/best.pt` exists.
+assume `outputs/classifier/best.pt` exists.
 
 Run a short joint smoke test:
 
@@ -103,7 +103,7 @@ Run a short joint smoke test:
 python -m charwritevit.cli.train_iam \
   --config configs/kaggle.yaml \
   --output outputs/iam-smoke \
-  --classifier outputs/classifier-v2/best.pt \
+  --classifier outputs/classifier/best.pt \
   --epochs 1 \
   --max-steps 2
 ```
@@ -114,7 +114,7 @@ Then run the complete joint stage:
 python -m charwritevit.cli.train_iam \
   --config configs/kaggle.yaml \
   --output outputs/iam \
-  --classifier outputs/classifier-v2/best.pt
+  --classifier outputs/classifier/best.pt
 ```
 
 The pretrained character classifier remains frozen throughout IAM training;
@@ -125,7 +125,7 @@ refiner. Resume the trainable IAM networks with:
 python -m charwritevit.cli.train_iam \
   --config configs/kaggle.yaml \
   --output outputs/iam \
-  --classifier outputs/classifier-v2/best.pt \
+  --classifier outputs/classifier/best.pt \
   --resume outputs/iam/latest.pt
 ```
 
