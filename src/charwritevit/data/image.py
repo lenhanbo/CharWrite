@@ -36,7 +36,12 @@ def canonical_word(image: Image.Image, length: int, height: int = 32, char_width
 
 
 def pil_to_tensor(image: Image.Image, size: tuple[int, int]) -> torch.Tensor:
-    canvas = ImageOps.fit(canonicalize_polarity(image), size, method=Image.Resampling.LANCZOS)
+    # Character sources such as EMNIST are square while the classifier input is
+    # 16x32. ImageOps.fit would scale to 32x32 and crop half of the character's
+    # width. Preserve the complete glyph and pad the remaining area instead.
+    fitted = ImageOps.contain(canonicalize_polarity(image), size, Image.Resampling.LANCZOS)
+    canvas = Image.new("L", size, 255)
+    canvas.paste(fitted, ((size[0] - fitted.width) // 2, (size[1] - fitted.height) // 2))
     array = np.asarray(canvas, dtype=np.float32) / 127.5 - 1.0
     return torch.from_numpy(array).unsqueeze(0)
 

@@ -34,16 +34,19 @@ class MetricHistory:
         axis.set_xlabel("epoch"); axis.grid(alpha=.25); axis.legend(); figure.tight_layout(); figure.savefig(self.root/filename,dpi=150); plt.close(figure)
 
 
-def save_classifier_preview(images: torch.Tensor, labels: torch.Tensor, logits: torch.Tensor, tokens: list[str], path: str | Path, limit=16) -> None:
-    count=min(limit,images.shape[0]); columns=4; rows=(count+columns-1)//columns
-    figure,_=plt.subplots(rows,columns,figsize=(columns*3,rows*3)); axes=figure.axes
+def save_classifier_preview(images: torch.Tensor, labels: torch.Tensor, logits: torch.Tensor,
+                            tokens: list[str], path: str | Path, limit=16,
+                            columns=4, title: str | None = None) -> None:
+    count=min(limit,images.shape[0]); columns=min(columns,max(1,count)); rows=(count+columns-1)//columns
+    figure,_=plt.subplots(rows,columns,figsize=(columns*2.2,rows*2.2),squeeze=False); axes=figure.axes
     probabilities=logits.softmax(-1); confidence,prediction=probabilities.max(-1)
     for index,axis in enumerate(axes):
         axis.axis("off")
         if index>=count: continue
         axis.imshow(((images[index,0].detach().cpu()+1)*127.5).clamp(0,255),cmap="gray",vmin=0,vmax=255)
         truth=tokens[int(labels[index])]; pred=tokens[int(prediction[index])]
-        axis.set_title(f"true={truth} pred={pred}\np={float(confidence[index]):.3f}")
+        axis.set_title(f"true={truth} pred={pred}\np={float(confidence[index]):.3f}",fontsize=8)
+    if title: figure.suptitle(title)
     figure.tight_layout(); target=Path(path); target.parent.mkdir(parents=True,exist_ok=True); figure.savefig(target,dpi=150); plt.close(figure)
 
 

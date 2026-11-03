@@ -26,3 +26,14 @@ def test_tensor_contract_is_white_positive_and_ink_negative():
     assert iam_tensor[0,0,0]>0.99
     assert iam_tensor[0,16,8]<-0.99
     assert torch.allclose(iam_tensor,emnist_tensor)
+
+
+def test_square_character_is_contained_and_padded_instead_of_cropped():
+    array=np.full((28,28),255,dtype=np.uint8)
+    array[6:22,1:4]=0
+    array[6:22,24:27]=0
+    tensor=pil_to_tensor(Image.fromarray(array,mode="L"),(16,32))
+    assert tensor[0,:6].min()>0.9
+    assert tensor[0,26:].min()>0.9
+    assert tensor[0,10:22,:3].min()<0
+    assert tensor[0,10:22,-3:].min()<0

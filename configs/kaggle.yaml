@@ -44,6 +44,9 @@ train:
   classifier_learning_rate: 0.001
   classifier_min_learning_rate: 0.00001
   classifier_warmup_epochs: 1.0
+  # Repeat the 80 fixed GNU glyphs so the frozen classifier is explicitly
+  # anchored to the exact character domain used by the refiner.
+  classifier_unifont_repeats: 256
   classifier_synthetic_fraction: 0.25
   classifier_synthetic_val_samples: 10000
   learning_rate: 0.00005

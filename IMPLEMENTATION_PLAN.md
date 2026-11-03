@@ -39,8 +39,9 @@ post-generator correction in this baseline.
 
 ## Auxiliary networks and losses
 
-- Character classifier: pretrained separately, then frozen throughout IAM
-  training; its CE gradient passes through styled glyphs into the character
+- Character classifier: pretrained separately on uncropped, white-padded
+  EMNIST/font glyphs plus a repeated exact-GNU anchor, then frozen throughout
+  IAM training; its CE gradient passes through styled glyphs into the character
   refiner without updating the classifier.
 - Recognizer: WriteViT-style ResNet18 patch encoder + ViT blocks + CTC head;
   trained jointly on real IAM words and frozen only during generator updates.

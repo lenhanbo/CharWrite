@@ -91,6 +91,11 @@ def main():
         generator.load_state_dict(load_checkpoint(args.synthetic_checkpoint,device)["model"])
     classifier=CharacterClassifier(len(vocab)).to(device)
     classifier_state=load_checkpoint(args.classifier,device)
+    if int(classifier_state.get("classifier_data_version",0)) != 2:
+        raise ValueError(
+            "Character checkpoint predates uncropped EMNIST + GNU anchoring; "
+            "train a fresh classifier-v2 checkpoint before IAM training"
+        )
     classifier.load_state_dict(classifier_state.get("classifier",classifier_state.get("model")))
     classifier.eval(); _set_grad(classifier,False)
     ocr=WordOCR(len(vocab)).to(device)
@@ -216,7 +221,7 @@ def main():
             writer=writer.state_dict(),ocr=ocr.state_dict(),classifier=classifier.state_dict(),optimizer_g=optimizer_g.state_dict(),
             optimizer_d=optimizer_d.state_dict(),optimizer_w=optimizer_w.state_dict(),optimizer_ocr=optimizer_ocr.state_dict(),
             scaler_g=scaler_g.state_dict(),scaler_d=scaler_d.state_dict(),scaler_w=scaler_w.state_dict(),scaler_ocr=scaler_ocr.state_dict(),
-            writer_to_id=writer_to_id,character_classifier_mode="pretrained_frozen",
+            writer_to_id=writer_to_id,character_classifier_mode="pretrained_frozen",classifier_data_version=2,
             epoch=epoch,batch_step=batch_step,generator_updates=generator_updates,config=cfg,
         )
         if epoch%int(train_cfg.get("preview_every",1))==0:
