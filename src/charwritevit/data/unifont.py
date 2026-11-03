@@ -40,10 +40,13 @@ class UnifontCharacterDataset(Dataset):
     def __len__(self) -> int:
         return self.labels.numel() * self.repeats
 
-    def __getitem__(self, index: int) -> tuple[torch.Tensor, torch.Tensor]:
+    def __getitem__(self, index: int) -> tuple[torch.Tensor, int]:
         label = self.labels[index % self.labels.numel()]
         glyph = 1.0 - 2.0 * self.table[label].view(1, 16, 16)
         glyph = F.interpolate(
             glyph.unsqueeze(0), size=(32, self.char_width), mode="nearest"
         ).squeeze(0)
-        return glyph, label
+        # Match torchvision/CSV datasets, which return a Python integer label.
+        # Mixed int/scalar-tensor labels in ConcatDataset break default_collate
+        # whenever a shuffled batch crosses a dataset boundary.
+        return glyph, int(label)

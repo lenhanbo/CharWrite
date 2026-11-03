@@ -12,6 +12,7 @@ def test_unifont_classifier_anchor_has_expected_shape_labels_and_repeats():
     assert len(dataset)==4
     image,label=dataset[0]
     assert image.shape==(1,32,16)
-    assert int(label)==vocab.stoi["A"]
+    assert isinstance(label,int)
+    assert label==vocab.stoi["A"]
     assert image.min()==-1 and image.max()==1
     assert int(dataset[2][1])==vocab.stoi["A"]
